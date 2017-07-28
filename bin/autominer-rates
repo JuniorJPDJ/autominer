@@ -95,6 +95,12 @@ for my $period (qw|s30 m1 m5 m10 h1 h3|)
   $rates{$period} = decode_json($text);
 }
 
+my %opportuniities;
+open(my $fh, "<$opts{datadir}/opportunities/nicehash-$opts{region}/present") or die $!;
+my $text = do { local $/ = undef ; <$fh> };
+close $fh;
+my $opportunities = decode_json($text);
+
 # compute percentage deltas
 my @algos = keys %{$rates{s30}};
 my %pct_deltas;
@@ -115,7 +121,7 @@ $sort_mod = -1 if $opts{reverse};
 printf("%20s %14s %14s %14s %14s %14s %14s\n", "", qw|h3 h1 m10 m5 m1 s30|);
 for my $algo (@algos)
 {
-  printf("%20s %14.8f %14.8f %14.8f %14.8f %14.8f %14.8f %8s\n"
+  printf("%20s %14.8f %14.8f %14.8f %14.8f %14.8f %14.8f %8s %2d%% %14.8f\n"
     , $algo
     , $rates{h3}{$algo}
     , $rates{h1}{$algo}
@@ -124,5 +130,7 @@ for my $algo (@algos)
     , $rates{m1}{$algo}
     , $rates{s30}{$algo}
     , sprintf("%%%6.2f", $pct_deltas{$algo})
+    , $$opportunities{$algo}{size_pct}
+    , $$opportunities{$algo}{price}
   );
 }

@@ -29,7 +29,7 @@ use util;
 use release;
 override_warn_and_die();
 
-my $mode;
+my $mode = 'mine';
 for(my $x = 0; $x <= $#ARGV; $x++)
 {
   my $param = $ARGV[$x];

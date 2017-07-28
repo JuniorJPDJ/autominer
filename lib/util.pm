@@ -25,7 +25,7 @@ require Exporter;
 our @ISA = qw|Exporter|;
 our @EXPORT = (
     qw|run killfast curl filter override_warn_and_die lock_obtain|
-  , qw|ring_sub ring_add|
+  , qw|mkdirp symlinkf|
 );
 
 use File::Temp;
@@ -214,37 +214,12 @@ sub filter
   $output;
 }
 
-sub ring_add
-{
-  my ($a, $b, $ring) = @_;
-
-  ($a + $b) % $ring
-}
-
-sub ring_sub
-{
-  my ($a, $b, $ring) = @_;
-
-  ($a - $b) % $ring
-}
-
-sub xopen
-{
-  my ($path, $mode) = @_;
-
-  my $r = POSIX::open($path, $mode);
-  return $r if $r && $r >= 0;
-  return -1 if $!{ENOENT};
-  return -1 if $!{EEXIST};
-  die "open($path) : $!";
-}
-
 sub obtain
 {
   my $path = shift;
 
   # create the pidfile
-  my $fd = xopen($path, O_CREAT | O_WRONLY | O_EXCL);
+  my $fd = uxopen($path, O_CREAT | O_WRONLY | O_EXCL);
 
   # success ; record our pid in the file
   if($fd >= 0)
@@ -283,6 +258,33 @@ sub lock_obtain
   }
 
   return 0;
+}
+
+# fatal mkdir but only fail when errno != EEXIST
+sub mkdirp
+{
+  my $path = shift;
+
+  my @parts = 
+  my $pfx = '/' if substr($path, 0, 1) eq '/';
+  my $s = '';
+  for my $part (split(/\/+/, $path))
+  {
+    next unless $part;
+    $s .= "/" if $s;
+    $s .= $part;
+    uxmkdir("$pfx/$s") if $pfx;
+    uxmkdir($s) if not $pfx;
+  }
+}
+
+# rm linkpath (but dont fail if linkpath doesnt exist), then fatal symlink(target, linkpath)
+sub symlinkf
+{
+  my ($target, $linkpath) = @_;
+
+  uxunlink($linkpath);
+  symlink($target, $linkpath) or die("symlink($target, $linkpath) : $!");
 }
 
 1

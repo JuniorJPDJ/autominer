@@ -28,6 +28,7 @@ use util;
 use release;
 override_warn_and_die();
 
+use Errno;
 use Time::Piece;
 use Data::Dumper;
 use JSON::XS;
@@ -36,15 +37,17 @@ use config;
 use miner;
 use perf;
 use xlinux;
+use ring;
 
 our $verbose = 0;
 our %opts = (
-    'period'        => 60 * 1         # one minute
-  , 'window'        => 'm5'           # the trailing 5 minute average
+    'period'        => 60 * 5         # 5 minutes
+  , 'window'        => 'm5'           # trailing 5 minute average
   , 'retention'     => 10 * 24 * 30   # one month
   , 'samples'       => 60 * 10        # ten minutes
   , 'profile'       => 'default'
   , 'worker'        => ''
+  , 'method'        => 'opportunity'
 
   # miner executables expected to be in $PATH by default
   , 'ccminer_path'              => 'ccminer'
@@ -57,6 +60,8 @@ my %optargs = (
     'help|h'            => \$opts{help}
   , 'version|V'         => \$opts{version}
   , 'verbose|v'         => \$opts{verbose}
+
+, 'method=s'          => \$opts{method}
 
   , 'data-dir=s'        => \$opts{datadir}
   , 'profile=s'         => \$opts{profile}
@@ -140,6 +145,7 @@ if($verbose)
   printf("%20s %s\n", "worker", $opts{worker});
   printf("%20s %s\n", "cards", $opts{"comma-cards"});
   printf("%20s %s\n", "evaluation period", $opts{period});
+  printf("%20s %s\n", "method", $opts{method});
   printf("%20s %s\n", "samples", $opts{samples});
   printf("%20s %s\n", "window", $opts{window});
   printf("%20s %s\n", "retention", $opts{retention});
@@ -150,13 +156,8 @@ if($verbose)
 $SIG{CHLD} = 'IGNORE';
 
 # ensure directories exist
-mkdirp("$opts{datadir}");
-mkdirp("$opts{datadir}/bench");
 mkdirp("$opts{datadir}/bench/$opts{profile}");
-mkdirp("$opts{datadir}/history");
 mkdirp("$opts{datadir}/history/$opts{profile}");
-mkdirp("/tmp/run");
-mkdirp("/tmp/run/autominer");
 mkdirp("/tmp/run/autominer/aggregator");
 
 # load miners
@@ -180,6 +181,7 @@ for my $miner (values %miners)
 
 # initialize history files
 my $history_dir = "$opts{datadir}/history/$opts{profile}";
+
 my $history_head = readlink("$history_dir/head");
 $history_head = int $history_head if $history_head;
 
@@ -198,9 +200,10 @@ if(defined $history_head and defined $history_tail)
 }
 
 my $quit = 0;
-my $mining_market = '';
-my $mining_miner = '';
-my $mining_algo = '';
+my $mining = { algo => '', market => '', miner => '' };
+my %rates;
+my %opportunities;
+my $present = undef;
 my $miner_pid = 0;
 my $perf_pid = 0;
 my $nicehash_aggregator_eu_pid = 0;
@@ -270,6 +273,13 @@ my ($miner_reader_fd, $miner_writer_fd) = POSIX::pipe();
 my ($perf_reader_fd, $perf_writer_fd) = POSIX::pipe();
 my ($autominer_reader_fd, $autominer_writer_fd) = POSIX::pipe();
 
+if($verbose)
+{
+  print("miner-reader $miner_reader_fd miner-writer $miner_writer_fd\n");
+  print("perf-reader $perf_reader_fd perf-writer $perf_writer_fd\n");
+  print("autominer-reader $autominer_reader_fd autominer-writer $autominer_writer_fd\n");
+}
+
 sub getrates
 {
   my ($market, $window) = @_;
@@ -282,12 +292,27 @@ sub getrates
   decode_json($text);
 }
 
-my %rates;
+sub getopportunities
+{
+  my ($market) = @_;
+
+  my $path = "$opts{datadir}/opportunities/$market/present";
+  open(my $fh, "<$path") or die "open($path) : $!";
+  my $text = do { local $/ = undef ; <$fh> };
+  close $fh;
+
+  decode_json($text);
+}
+
+# load market stats
+$rates{"nicehash-usa"} = getrates("nicehash-usa", $opts{window}) if $opts{"nicehash-usa"};
+$opportunities{"nicehash-usa"} = getopportunities("nicehash-usa") if $opts{"nicehash-usa"};
+
+$rates{"nicehash-eu"} = getrates("nicehash-eu", $opts{window}) if $opts{"nicehash-eu"};
+$opportunities{"nicehash-eu"} = getopportunities("nicehash-eu") if $opts{"nicehash-eu"};
+
 while(!$quit)
 {
-  $rates{"nicehash-usa"} = getrates("nicehash-usa", $opts{window}) if $opts{"nicehash-usa"};
-  $rates{"nicehash-eu"} = getrates("nicehash-eu", $opts{window}) if $opts{"nicehash-eu"};
-
   # evaluate mining options
   my @options;
   for my $market ("nicehash-usa", "nicehash-eu")
@@ -298,38 +323,86 @@ while(!$quit)
     {
       while(my($algoname, $algo) = each %{$$miner{algos}})
       {
-        my $rate = $rates{$market}{$algoname};
         next unless $rates{$market}{$algoname};
 
-        push @options, {
+        my $option = {
             miner => $miner
           , algo => $algo
           , market => $market
-          , rate => $rates{$market}{$algoname}
-          , profit => $$algo{speed} * $rates{$market}{$algoname}
         };
+
+        $$option{average_rate} = average_rate($mining, $option, \%rates, \%opportunities, $present);
+        $$option{opportunity_rate} = opportunity_rate($mining, $option, \%rates, \%opportunities, $present);
+        $$option{actual_rate} = actual_rate($mining, $option, \%rates, \%opportunities, $present);
+        $$option{predicted_rate} = predicted_rate($mining, $option, \%rates, \%opportunities, $present);
+        $$option{predicted_profit} = predicted_profit($mining, $option, \%rates, \%opportunities, $present);
+
+        push @options, $option;
       }
     }
   }
 
-  @options = sort { $$b{profit} <=> $$a{profit} } @options;
-  my $option = $options[0];
-
-  for my $option (@options)
+  @options = sort { $$b{predicted_profit} <=> $$a{predicted_profit} } @options;
+  my $option;
+  for my $o (@options)
   {
-    my $profit = "(no data)";
-    if($$option{algo}{speed} != 0xFFFFFFFF) {
-      $profit = sprintf("%14.8f", $$option{profit});
+    if($option) { }
+    elsif(!$present)
+    {
+      $option = $o;
+    }
+    elsif($$o{algo}{name} eq $$mining{algo} && $$o{market} eq $$mining{market})
+    {
+      $option = $o;
+    }
+    elsif(($$o{predicted_profit} * .8) > ($$present{speed} * $$present{price}))
+    {
+      $option = $o;
     }
 
-    printf "market %-15s miner %-20s algo %-20s rate %14.8f * speed %14.8f = profit %-10s\n"
-      , $$option{market}
-      , $$option{miner}{name}
-      , $$option{algo}{name}
-      , $$option{rate}
-      , $$option{algo}{speed}
+    my $profit = "(no data)";
+    if($$o{algo}{speed} != 0xFFFFFFFF) {
+      $profit = sprintf("%14.8f", $$o{predicted_profit});
+    }
+
+    printf "market %-15s miner %-20s algo %-20s"
+      , $$o{market}
+      , $$o{miner}{name}
+      , $$o{algo}{name}
+    ;
+    if($$o{algo}{name} eq $$mining{algo} && $$o{market} eq $$mining{market})
+    {
+      printf(" rate [ %14.8f   %14.8f  (%14.8f)]", $$o{opportunity_rate}, $$o{average_rate}, $$o{actual_rate})
+    }
+    elsif($opts{method} eq "average")
+    {
+      printf(" rate [ %14.8f  (%14.8f)  %14s ]", $$o{opportunity_rate}, $$o{average_rate}, $$o{actual_rate})
+    }
+    else
+    {
+      printf(" rate [(%14.8f)  %14.8f   %14s ]", $$o{opportunity_rate}, $$o{average_rate}, $$o{actual_rate})
+    }
+    printf " * speed %14.8f = profit %-10s"
+      , $$o{algo}{speed}
       , $profit
     ;
+
+    if($$o{algo}{name} eq $$mining{algo} && $$o{market} eq $$mining{market})
+    {
+      print(" <<<");  # current option
+    }
+    else
+    {
+      print("   ");
+    }
+
+    # newly selected
+    if($option and $option == $o)
+    {
+      print(" <<=")
+    }
+
+    print("\n");
   }
 
   my $market = $$option{market};
@@ -343,18 +416,9 @@ while(!$quit)
   my $bench_path = sprintf("%s/%05u", $algo_bench_dir, $bench_file_num);
   open(my $bench_fh, ">$bench_path") or die "open($bench_path) : $!";
 
-  # the header line contains details about the selected option
-  my $perf_header = sprintf("%-10s %12u %15s %30s %3s %14.8f * %14.8f = %14.8f\n\n"
-    , $release::number
-    , time()
-    , $market
-    , "$$miner{name}/$$algo{name}"
-    , $opts{window}
-    , $$algo{speed}
-    , $$option{rate}
-    , $$option{profit}
-  );
-  syswrite($bench_fh, $perf_header, length($perf_header));
+  # the header lines contains details about the selected option
+  my $perf_summary = perf_summary($mining, $option, \%rates, \%opportunities, $present);
+  syswrite($bench_fh, $perf_summary, length($perf_summary));
 
   # advance the history files
   $history_head = 0 unless $history_head;
@@ -374,7 +438,7 @@ while(!$quit)
     symlinkf(sprintf("%05u", $history_tail), "$history_dir/tail");
   }
 
-  if(!$miner_pid || !$perf_pid || $market ne $mining_market || $$miner{name} ne $mining_miner || $$algo{name} ne $mining_algo)
+  if($market ne $$mining{market} || $$miner{name} ne $$mining{miner} || $$algo{name} ne $$mining{algo})
   {
     miner_env_setup(market => $market, miner => $$miner{name}, algo => $$algo{name});
 
@@ -404,9 +468,9 @@ while(!$quit)
       exec { $cmd[0] } @cmd;
     }
 
-    $mining_market = $market;
-    $mining_miner = $$miner{name};
-    $mining_algo = $$algo{name};
+    $$mining{market} = $market;
+    $$mining{miner} = $$miner{name};
+    $$mining{algo} = $$algo{name};
   }
 
   # read from the perf pipe until the period elapses
@@ -415,7 +479,6 @@ while(!$quit)
   my $T = time();
   my $buffer = '';
   my $data;
-  my $s30;
 
   my $rin = '';
   vec($rin, $miner_reader_fd, 1) = 1;
@@ -426,7 +489,7 @@ while(!$quit)
 
     if(!$miner_pid || !$perf_pid)
     {
-      print("miner or perf terminated early!");
+      print("miner or perf terminated early!\n");
       last;
     }
 
@@ -435,37 +498,75 @@ while(!$quit)
     # read from miner, write to perf, tee to stdout
     if(vec($rout, $miner_reader_fd, 1) == 1)
     {
-      my $r = POSIX::read($miner_reader_fd, $data, 0xffff);
-      POSIX::write(1, $data, $r);
-      POSIX::write($autominer_writer_fd, $data, $r);
+      $r = POSIX::read($miner_reader_fd, $data, 0xffff);
+      if(not defined $r)
+      {
+        die("read($miner_reader_fd) : $!") unless $!{EINTR};
+      }
+      if($r)
+      {
+        POSIX::write(1, $data, $r) or die "write(1) : $!";
+        POSIX::write($autominer_writer_fd, $data, $r) or die "write($autominer_writer_fd) : $!";
+      }
     }
 
     # read from perf, write to /bench/foo
     if(vec($rout, $perf_reader_fd, 1) == 1)
     {
-      my $r = POSIX::read($perf_reader_fd, $data, 0xffff);
-      $buffer .= $data;
-
-      $s30 = undef;
-
-      # consume full lines
-      while((my $nl = index($buffer, "\n")) >= 0)
+      $r = POSIX::read($perf_reader_fd, $data, 0xffff);
+      if(not defined $r)
       {
-        my $line = substr($buffer, 0, $nl + 1, '');
-        chomp $line;
-
-        # get the most current rates
-        $s30 = getrates($market, "s30") if not defined $s30;
-        my $record = sprintf("%s %14.8f\n", $line, $$s30{$$algo{name}});
-        syswrite($bench_fh, $record, length($record));
-
-        perf_readline($miner, $algo, $line);
+        die("read($perf_reader_fd) : $!") unless $!{EINTR};
       }
+      if($r)
+      {
+        $buffer .= $data;
 
-      # minimize lost shares by switching right after reading a perf record
-      last if (time() - $T) >= ($opts{period});
+        # consume full lines
+        while((my $nl = index($buffer, "\n")) >= 0)
+        {
+          my $line = substr($buffer, 0, $nl + 1, '');
+          chomp $line;
+
+          $line = "$line\n";
+          syswrite($bench_fh, $line, length($line));
+          perf_readline($miner, $algo, $line);
+        }
+
+        # minimize lost shares by switching right after reading a perf record
+        last if (time() - $T) >= ($opts{period});
+      }
     }
   }
+
+  # get performance from nicehash
+  while(1)
+  {
+    $present = nicehash::current_performance($opts{payout_address}, $$mining{algo}, $$mining{market});
+    last if $present;
+
+    # throttled
+    sleep 3;
+  }
+
+  # load market stats
+  $rates{"nicehash-usa"} = getrates("nicehash-usa", $opts{window}) if $opts{"nicehash-usa"};
+  $opportunities{"nicehash-usa"} = getopportunities("nicehash-usa") if $opts{"nicehash-usa"};
+
+  $rates{"nicehash-eu"} = getrates("nicehash-eu", $opts{window}) if $opts{"nicehash-eu"};
+  $opportunities{"nicehash-eu"} = getopportunities("nicehash-eu") if $opts{"nicehash-eu"};
+
+  # the header line contains details about the selected option
+  $perf_summary = perf_summary($mining, $option, \%rates, \%opportunities, $present);
+  syswrite($bench_fh, $perf_summary, length($perf_summary));
+
+  # the header line contains details about the selected option
+  my $perf_footer = sprintf("%14.8f * %14.8f = %14.8f\n"
+    , $$present{price}
+    , $$present{speed}
+    , $$present{price} * $$present{speed}
+  );
+  syswrite($bench_fh, $perf_footer, length($perf_footer));
 
   close($bench_fh);
   perf_endfile($miner, $algo, $benchdir, $bench_file_num);

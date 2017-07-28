@@ -7,7 +7,7 @@ use warnings;
 
 require Exporter;
 our @ISA = qw|Exporter|;
-our @EXPORT = qw|nicecurl niceport stats_global_current orders_summarize|;
+our @EXPORT = qw|nicecurl niceport stats_global_current orders_summarize current_performance|;
 
 use util;
 use JSON::XS;
@@ -17,6 +17,11 @@ use Data::Dumper;
 our %regions = (
     "eu" =>       { code => 0 }
   , "usa" =>      { code => 1 }
+);
+
+our %regions_by_market = (
+    "nicehash-eu"   => "eu"
+  , "nicehash-usa"  => "usa"
 );
 
 # nicehash regions by number
@@ -119,36 +124,96 @@ sub nicecurl
   $$js{result}
 }
 
+# normalize btc/units/day -> btc/mh/day
 sub normalize_price
+{
+  my ($units, $price) = @_;
+
+  $units = lc($units);
+  substr($units, -2) = "" if substr($units, -2) eq "/s";
+  substr($units, -3) = "h" if substr($units, -3) eq "sol";
+
+  # downscale to mh
+  if($units eq 'ph')
+  {
+    $price /= 1000;
+    $units = 'th';
+  }
+  if($units eq 'th')
+  {
+    $price /= 1000;
+    $units = 'gh';
+  }
+  if($units eq 'gh')
+  {
+    $price /= 1000;
+    $units = 'mh';
+  }
+
+  # upscale to mh
+  if($units eq 'h')
+  {
+    $price *= 1000;
+    $units = 'kh';
+  }
+  if($units eq 'kh')
+  {
+    $price *= 1000;
+    $units = 'mh';
+  }
+
+  $price;
+}
+
+# normalize units/s -> mh/s
+sub normalize_hashrate
+{
+  my ($units, $price) = @_;
+
+  $units = lc($units);
+  substr($units, -2) = "" if substr($units, -2) eq "/s";
+  substr($units, -3) = "h" if substr($units, -3) eq "sol";
+
+  # downscale to mh
+  if($units eq 'ph')
+  {
+    $price *= 1000;
+    $units = 'th';
+  }
+  if($units eq 'th')
+  {
+    $price *= 1000;
+    $units = 'gh';
+  }
+  if($units eq 'gh')
+  {
+    $price *= 1000;
+    $units = 'mh';
+  }
+
+  # upscale to mh
+  if($units eq 'h')
+  {
+    $price /= 1000;
+    $units = 'kh';
+  }
+  if($units eq 'kh')
+  {
+    $price /= 1000;
+    $units = 'mh';
+  }
+
+  $price;
+}
+
+sub normalize_algo_price
 {
   my ($algo, $price) = @_;
 
   my $config = $algos{$algo};
-
   my $units = lc($$config{units});
 
-  if($units eq 'ph/s')
-  {
-    $price /= 1000;
-    $units = 'th/s';
-  }
-  if($units eq 'th/s')
-  {
-    $price /= 1000;
-    $units = 'gh/s';
-  }
-  if($units eq 'gh/s')
-  {
-    $price /= 1000;
-    $units = 'mh/s';
-  }
-  if($units eq 'kh/s')
-  {
-    $price *= 1000;
-    $units = 'mh/s';
-  }
-
-  $price;
+  normalize_price($units, $price)
 }
 
 sub stats_global
@@ -164,7 +229,7 @@ sub stats_global
     my $algonum = $$offer{algo};
     my $algoname = $algos_by_number{$algonum};
 
-    $rates{$algoname} = normalize_price($algoname, $$offer{price});
+    $rates{$algoname} = normalize_algo_price($algoname, $$offer{price});
   }
 
   \%rates;
@@ -175,10 +240,40 @@ sub stats_global_current
   stats_global('stats.global.current', 'usa')
 }
 
+# this nicehash api doesnt report accurate accepted rate until the miner has
+# been submitting shares over a period of 5 minutes
+sub current_performance
+{
+  my ($addr, $algo, $market) = @_;
+
+  my $js = nicecurl('stats.provider.ex'
+    , addr => $addr
+#   , location => $regions{$market}{code}
+#   , algo => $algos{$algo}{code}
+    , from => (time() - 300)
+  );
+  return if not $js;
+
+  for my $result (@{$$js{current}})
+  {
+    if($$result{algo} == $algos{$algo}{code})
+    {
+      my $price = normalize_price($$result{suffix}, $$result{profitability});
+      my $accepted = 0;
+      $accepted = $$result{data}[0]{"a"} if $#{$$result{data}} >= 0;
+      $accepted = normalize_hashrate($$result{suffix}, $accepted);
+
+      return { price => $price, speed => $accepted };
+    }
+  }
+
+  return undef;
+}
+
 # returns true if all algos were updated
 sub orders_summarize
 {
-  my ($region, $stats) = @_;
+  my ($region, $rates, $opportunities) = @_;
 
   my $failures = 0;
 
@@ -191,18 +286,60 @@ sub orders_summarize
       next;
     }
 
-    my $sum = 0;
-    my $workers = 0;
-    for my $order (@{$$js{orders}})
+    my @orders = sort { $$a{price} <=> $$a{price} } @{$$js{orders}};
+
+    my $total_accepted_speed = 0;
+    for my $order (@orders)
     {
-      $sum += $$order{price} * $$order{workers};
-      $workers += $$order{workers};
+      $total_accepted_speed += $$order{accepted_speed};
+    }
+
+    # opportunity in switching
+    my $opportunity_price = 0;
+    my $opportunity_speed = 0;
+    for my $order (@orders)
+    {
+      my $remaining_speed = ($total_accepted_speed * .1) - $opportunity_speed;
+      my $available_speed;
+      if($$order{limit_speed} == 0)
+      {
+        $available_speed = $remaining_speed;
+      }
+      else
+      {
+        $available_speed = $$order{limit_speed} - $$order{accepted_speed};
+        $available_speed = $remaining_speed if $available_speed > $remaining_speed;
+      }
+
+      $available_speed = 0 if $available_speed < 0;
+      $opportunity_speed += $available_speed;
+      $opportunity_price += $$order{price} * $available_speed;
+
+      last if $opportunity_speed >= ($total_accepted_speed * .1);
     }
 
     my $price = 0;
-    $price = $sum / $workers if $workers;
+    if($total_accepted_speed && ($opportunity_speed >= ($total_accepted_speed * .1)))
+    {
+      $price = $opportunity_price / $opportunity_speed;
+    }
+    my $size_pct = 0;
+    $size_pct = $opportunity_speed / $total_accepted_speed if $total_accepted_speed;
+    $$opportunities{$algo}{total} = $total_accepted_speed;
+    $$opportunities{$algo}{size} = $opportunity_speed;
+    $$opportunities{$algo}{size_pct} = $size_pct * 100;
+    $$opportunities{$algo}{price} = normalize_algo_price($algo, $price);
 
-    $$stats{$algo} = normalize_price($algo, $price);
+    # average price paid per hashrate
+    my $sum = 0;
+    for my $order (@orders)
+    {
+      $sum += $$order{price} * $$order{accepted_speed};
+    }
+
+    $price = 0;
+    $price = $sum / $total_accepted_speed if $total_accepted_speed;
+    $$rates{$algo} = normalize_algo_price($algo, $price);
   }
 
   !$failures

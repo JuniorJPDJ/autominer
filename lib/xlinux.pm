@@ -23,15 +23,16 @@ use warnings;
 
 require Exporter;
 our @ISA = qw|Exporter|;
-our @EXPORT = qw|mkdirp symlinkf uxopen xunlink uxunlink pr_set_pdeathsig|;
+our @EXPORT = qw|uxmkdir xfhopen uxfhopen uxopen xunlink uxunlink pr_set_pdeathsig|;
 
+use Data::Dumper;
 use Errno ':POSIX';
 use Fcntl;
 use Fcntl 'SEEK_SET';
 use POSIX;
 
 # fatal mkdir but only fail when errno != EEXIST
-sub mkdirp
+sub uxmkdir
 {
   my $path = shift;
   return if mkdir $path;
@@ -56,17 +57,18 @@ sub uxunlink
   die "unlink($path) : $!";
 }
 
-# rm linkpath (but dont fail if linkpath doesnt exist), then fatal symlink(target, linkpath)
-sub symlinkf
+# fatal fhopen
+sub xfhopen
 {
-  my ($target, $linkpath) = @_;
-
-  uxunlink($linkpath);
-  symlink($target, $linkpath) or die("symlink($target, $linkpath) : $!");
+  my $path = shift;
+  my $fh;
+  my $r = open($fh, $path);
+  return $fh if $r;
+  die "open($path) : $!";
 }
 
-# fatal open but only fail when errno not in { ENOENT, EEXIST }
-sub uxopen
+# fatal fhopen but only fail when errno not in { ENOENT, EEXIST }
+sub uxfhopen
 {
   my $path = shift;
   my $fh;
@@ -74,6 +76,18 @@ sub uxopen
   return $fh if $r;
   return if $!{ENOENT};
   return if $!{EEXIST};
+  die "open($path) : $!";
+}
+
+# fatal open but only fail when errno not in { ENOENT, EEXIST }
+sub uxopen
+{
+  my ($path, $mode) = @_;
+
+  my $r = POSIX::open($path, $mode);
+  return $r if $r && $r >= 0;
+  return -1 if $!{ENOENT};
+  return -1 if $!{EEXIST};
   die "open($path) : $!";
 }
 

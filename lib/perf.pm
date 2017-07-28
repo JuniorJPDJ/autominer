@@ -23,13 +23,17 @@ use warnings;
 
 require Exporter;
 our @ISA = qw|Exporter|;
-our @EXPORT = qw|perf_readdir perf_startfile perf_readline perf_update perf_endfile perf_initialize|;
+our @EXPORT = (
+    qw|perf_readdir perf_startfile perf_readline perf_update perf_endfile perf_initialize perf_summary|
+  , qw|average_rate average_speed actual_rate actual_speed opportunity_rate opportunity_speed predicted_rate predicted_speed predicted_profit|
+);
 
 use Data::Dumper;
 use File::Find;
 
 use util;
 use xlinux;
+use ring;
 
 sub normalize_hashrate
 {
@@ -83,7 +87,7 @@ sub perf_readline
 
   if($line !~ $re)
   {
-    print "malformed $$miner{name}/$$algo{name} perf record '$line'\n" if $::verbose;
+#    print "malformed $$miner{name}/$$algo{name} perf record '$line'\n" if $::verbose;
   }
   else
   {
@@ -182,7 +186,7 @@ sub perf_readdir
     # reset the time base for interpreting a new file
     perf_startfile($miner, $algo);
 
-    open(my $fh, "<$dir/$_") or die "open($dir/$_) : $!";
+    my $fh = xfhopen("<$dir/$_");
 
     # discard the header
     my $line = <$fh>; $line = <$fh>;
@@ -215,24 +219,11 @@ sub perf_initialize
   my $dir = "$benchdir/$$miner{name}/$$algo{name}";
   mkdirp($dir);
 
-  # initialize bounds from the links
-  my $head = readlink("$dir/head");
-  $$algo{head} = int($head) if $head;
-
-  my $tail = readlink("$dir/tail");
-  $$algo{tail} = int($tail) if $tail;
-
   $$algo{perf_time_base} = 0;
+  ($$algo{head}, $$algo{tail}) = ring_init($dir, $::opts{retention});
 
   if(defined($$algo{tail}) and defined($$algo{head}))
   {
-    # prune history files outside the retention window
-    while(ring_sub($$algo{head}, $$algo{tail}, 0xffff) > $::opts{retention})
-    {
-      uxunlink(sprintf("%s/%05u", $dir, $$algo{tail}));
-      $$algo{tail} = ring_add($$algo{tail}, 1, 0xffff);
-    }
-
     # load history files within the samples window
     my $x = $$algo{tail};
     if(ring_sub($$algo{head}, $$algo{tail}, 0xffff) > $::opts{samples})
@@ -241,7 +232,7 @@ sub perf_initialize
     }
     while(1)
     {
-      if((my $fh = uxopen(sprintf("<%s/%05u", $dir, $x))))
+      if((my $fh = uxfhopen(sprintf("<%s/%05u", $dir, $x))))
       {
         # discard the header
         my $line = <$fh>; $line = <$fh>;
@@ -259,4 +250,119 @@ sub perf_initialize
   }
 
   perf_update($miner, $algo, $benchdir);
+}
+
+sub perf_summary
+{
+  my ($mining, $option, $rates, $opportunities, $present) = @_;
+
+  my $summary = sprintf("%-10s %12u %15s %30s"
+    , $release::number
+    , time()
+    , $$option{market}
+    , "$$option{miner}{name}/$$option{algo}{name}"
+  );
+
+  my @s = (' ', ' ', ' ');
+  my @e = (' ', ' ', ' ');
+  if($$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
+  {
+    $s[2] = '(';
+    $e[2] = ')';
+  }
+  elsif($::opts{method} eq "average")
+  {
+    $s[1] = '(';
+    $e[1] = ')';
+  }
+  else
+  {
+    $s[0] = '(';
+    $e[0] = ')';
+  }
+    
+  $summary .= ' [';
+  $summary .= sprintf("%s%14.8f%s", $s[0], opportunity_rate(@_), $e[0]);
+  $summary .= sprintf(" %s%14.8f%s", $s[1], average_rate(@_), $e[1]);
+  $summary .= sprintf(" %s%14.8f%s", $s[2], predicted_rate(@_), $e[2]);
+  $summary .= ']';
+
+  $summary .= sprintf(" * %14.8f = %14.8f\n"
+    , average_speed(@_)
+    , predicted_profit(@_)
+  );
+
+  return $summary;
+}
+
+sub average_rate
+{
+  my ($mining, $option, $rates, $opportunities, $present) = @_;
+
+  $$rates{$$option{market}}{$$option{algo}{name}} || 0
+}
+
+sub average_speed
+{
+  my ($mining, $option, $rates, $opportunities, $present) = @_;
+
+  $$option{algo}{speed}
+}
+
+sub actual_rate
+{
+  my ($mining, $option, $rates, $opportunities, $present) = @_;
+
+  if($$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
+  {
+    return $$present{price}
+  }
+  0
+}
+
+sub actual_speed
+{
+  my ($mining, $option, $rates, $opportunities, $present) = @_;
+
+  return $$present{speed} if $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market};
+  0
+}
+
+sub opportunity_rate
+{
+  my ($mining, $option, $rates, $opportunities, $present) = @_;
+
+  return 0 if $$opportunities{$$option{market}}{$$option{algo}{name}}{size_pct} < 10;
+  $$opportunities{$$option{market}}{$$option{algo}{name}}{price}
+}
+
+sub opportunity_speed
+{
+  my ($mining, $option, $rates, $opportunities, $present) = @_;
+
+  $$option{algo}{speed}
+}
+
+sub predicted_rate
+{
+  my ($mining, $option, $rates, $opportunities, $present) = @_;
+
+  return actual_rate(@_) if $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market};
+  return average_rate(@_) if $::opts{method} eq "average";
+  return opportunity_rate(@_)
+}
+
+sub predicted_speed
+{
+  my ($mining, $option, $rates, $opportunities, $present) = @_;
+
+# return actual_speed(@_) if $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market};
+  return average_speed(@_)
+}
+
+sub predicted_profit
+{
+  my ($mining, $option, $rates, $opportunities, $present) = @_;
+
+  return predicted_rate(@_) * predicted_speed(@_)
 }

@@ -28,6 +28,7 @@ use util;
 use release;
 override_warn_and_die();
 
+use Data::Dumper;
 use File::Find;
 use Time::Piece;
 use config;
@@ -87,6 +88,7 @@ my $wanted = sub {
 
   # determine whether there was a transition
   readlink($_) =~ /\/([^\/]+)\/([^\/]+)\/[0-9]+$/;
+my $fname = "$_";
 
   my $miner = $1;
   my $algo = $2;
@@ -96,7 +98,10 @@ my $wanted = sub {
     $transition = 1;
   }
 
-  return if $opts{transitions} and not $transition;
+  if($opts{transitions} and not $transition)
+  {
+    return;
+  }
 
   my $fh;
   unless(open($fh, "<$history_dir/$_"))
@@ -105,9 +110,18 @@ my $wanted = sub {
     return;
   }
 
-  return unless $fh;
-  my $header = <$fh>;
-  chomp $header if $header;
+  my $header;
+  my $footer;
+  my $line;
+  while(1)
+  {
+    my $s = <$fh>;
+    last unless $s;
+    chomp $s;
+    $line = $s if $header;
+    $header = $s unless $header;
+  }
+  $footer = $line;
   close($fh);
 
   if(not $header)
@@ -122,10 +136,13 @@ my $wanted = sub {
     \s+ ([0-9]+)                          # 1 unix timestamp
     \s+ ([a-zA-Z-_]+)                     # 2 market
     \s+ (?:[a-z0-9-_]+)\/(?:[a-z0-9-_]+)
-    \s+ ([a-z0-9]+)                       # 3 window
-    \s+ ([0-9.]+)\s+\*                    # 4 speed
-    \s+ ([0-9.]+)\s+=                     # 5 rate
-    \s+ ([0-9.]+)                         # 6 profit
+    \s* \[
+    \s* \(?\s*([0-9.]+)\s*\)?             # 3 opportunity rate
+    \s* \(?\s*([0-9.]+)\s*\)?             # 4 average rate
+    \s* \(?\s*([0-9.]+)\s*\)?             # 5 actual rate
+    \s* \]\s+\*
+    \s+ ([0-9.]+)\s+=                     # 6 average speed
+    \s+ ([0-9.]+)                         # 7 predicted profit
     $
   /xi;
 
@@ -137,22 +154,45 @@ my $wanted = sub {
 
   my $start = $1;
   my $market = $2;
-  my $window = $3;
-  my $speed = $4;
-  my $rate = $5;
-  my $profit = $6;
-
+  my $opportunity_rate = $3;
+  my $average_rate = $4;
+  my $actual_rate = $5;
+  my $average_speed = $6;
+  my $predicted_profit = $7;
   my $mtime = (stat($_))[9];
 
-  printf("%20s", localtime($start)->strftime("%D %T"));
-  printf(" %20s", localtime($mtime)->strftime("%D %T"));
-  printf(" %20s", "$miner/$algo");
-  printf(" %14s", "(no data)") if $speed == 0xffffffff;
-  printf(" %14.8f", $speed) if $speed != 0xffffffff;
-  printf(" * %14.8f", $rate);
-  printf(" = %14s BTC/day", "(unknown)") if $speed == 0xffffffff;
-  printf(" = %14.8f BTC/day", $profit) if $speed != 0xffffffff;
-  printf(" (%3s)", $window);
+  $re = qr/
+    ^
+    \s+ ([0-9.]+)\s+\*                    # 1 speed
+    \s+ ([0-9.]+)\s+=                     # 2 rate
+    \s+ ([0-9.]+)                         # 3 profit
+    $
+  /xi;
+
+  my $actual_speed;
+  my $actual_profit;
+  my $profit_variance = 0;
+  if($footer and $footer =~ $re)
+  {
+    $actual_speed = $1;
+    $actual_rate = $2;
+    $actual_profit = $3;
+
+    my $profit_delta = $actual_profit - $predicted_profit;
+    $profit_variance = $profit_delta / $predicted_profit;
+    $profit_variance *= 100;
+  }
+
+  printf("%17s", localtime($start)->strftime("%D %T"));
+  printf(" - %17s", localtime($mtime)->strftime("%D %T"));
+  printf(" %30s", "$miner/$algo");
+  printf(" %14.8f BTC/day", $actual_profit) if $actual_profit;
+  printf(" variance %-4d%%", $profit_variance);
+  printf(" predicted %14.8f", $opportunity_rate);
+  printf(" * %14s", "(no data)") if $average_speed == 0xffffffff;
+  printf(" * %14.8f", $average_speed) if $average_speed != 0xffffffff;
+  printf(" = %14s", "(unknown)") if $average_speed == 0xffffffff;
+  printf(" = %14.8f", $predicted_profit) if $average_speed != 0xffffffff;
   print(" <--") if $transition;
   print("\n");
 
