@@ -355,9 +355,15 @@ while(!$quit)
     {
       $option = $o;
     }
-    elsif(($$o{predicted_profit} * .8) > ($$present{speed} * $$present{price}))
+    else
     {
-      $option = $o;
+      my $delta = $$o{predicted_profit} - ($$present{speed} * $$present{price});
+      my $variance = ($delta / ($$present{speed} * $$present{price})) * 100;
+
+      if($variance >= 15)
+      {
+        $option = $o;
+      }
     }
 
     my $profit = "(no data)";
