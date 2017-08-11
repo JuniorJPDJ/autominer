@@ -288,7 +288,7 @@ sub perf_summary
   $summary .= ']';
 
   $summary .= sprintf(" * %14.8f = %14.8f\n"
-    , average_speed(@_)
+    , predicted_speed(@_)
     , predicted_profit(@_)
   );
 
@@ -313,34 +313,47 @@ sub actual_rate
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
+  my $price;
   if($$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
   {
-    return $$present{price}
+    $price = $$present{price}
   }
-  0
+  $price || 0
 }
 
 sub actual_speed
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
-  return $$present{speed} if $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market};
-  0
+  my $speed;
+  if($$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
+  {
+    $speed = $$present{speed}
+  }
+  $speed || 0
 }
 
 sub opportunity_rate
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
-  return 0 if $$opportunities{$$option{market}}{$$option{algo}{name}}{size_pct} < 10;
-  $$opportunities{$$option{market}}{$$option{algo}{name}}{price}
+  my $price;
+  if($$opportunities{$$option{market}}{$$option{algo}{name}}{size_pct} < 10)
+  {
+
+  }
+  else
+  {
+    $price = $$opportunities{$$option{market}}{$$option{algo}{name}}{price};
+  }
+  $price || 0
 }
 
 sub opportunity_speed
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
-  $$option{algo}{speed}
+  $$option{algo}{speed} || 0
 }
 
 sub predicted_rate
@@ -356,7 +369,7 @@ sub predicted_speed
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
-# return actual_speed(@_) if $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market};
+  return actual_speed(@_) if $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market};
   return average_speed(@_)
 }
 
@@ -364,5 +377,5 @@ sub predicted_profit
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
-  return predicted_rate(@_) * predicted_speed(@_)
+  predicted_rate(@_) * predicted_speed(@_)
 }
