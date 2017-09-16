@@ -209,8 +209,11 @@ if(defined($tail) and defined($head))
     my $text = do { local $/ = undef ; <$fh> };
     close $fh;
 
-    my $current = decode_json($text);
-    ingest_rates($current);
+    if($text)
+    {
+      my $current = decode_json($text);
+      ingest_rates($current);
+    }
 
     last if $x == $head;
     $x = ring_add($x, 1, 0xffff);

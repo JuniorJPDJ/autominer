@@ -154,7 +154,7 @@ sub perf_endfile
   my $dir = "$benchdir/$$miner{name}/$$algo{name}";
 
   # discard aged out perf records
-  $#{$$algo{perf}} = $::opts{samples} if $#{$$algo{perf}} > $::opts{samples};
+  $#{$$algo{perf}} = $::opts{"historical-samples"} if $#{$$algo{perf}} > $::opts{"historical-samples"};
 
   # remove the file if it has now aged out
   $$algo{tail} = $num unless defined $$algo{tail};
@@ -226,9 +226,9 @@ sub perf_initialize
   {
     # load history files within the samples window
     my $x = $$algo{tail};
-    if(ring_sub($$algo{head}, $$algo{tail}, 0xffff) > $::opts{samples})
+    if(ring_sub($$algo{head}, $$algo{tail}, 0xffff) > $::opts{"historical-samples"})
     {
-      $x = ring_sub($$algo{head}, $::opts{samples}, 0xffff);
+      $x = ring_sub($$algo{head}, $::opts{"historical-samples"}, 0xffff);
     }
     while(1)
     {
@@ -265,12 +265,12 @@ sub perf_summary
 
   my @s = (' ', ' ', ' ');
   my @e = (' ', ' ', ' ');
-  if($$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
+  if($::opts{"use-actual-price"} && $$option{miner}{name} eq $$mining{miner} && $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
   {
     $s[2] = '(';
     $e[2] = ')';
   }
-  elsif($::opts{method} eq "average")
+  elsif($::opts{"price-method"} eq "trailing")
   {
     $s[1] = '(';
     $e[1] = ')';
@@ -299,14 +299,27 @@ sub average_rate
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
-  $$rates{$$option{market}}{$$option{algo}{name}} || 0
+  my $price;
+#  if($$opportunities{$$option{market}}{$$option{algo}{name}}{size_pct} < $::opts{"opportunity-threshold"})
+#  {
+#
+#  }
+#  else
+#  {
+    $price = $$rates{$$option{market}}{$$option{algo}{name}};
+#  }
+
+  $price || 0
 }
 
 sub average_speed
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
-  $$option{algo}{speed}
+  my $speed;
+  $speed = $$option{algo}{speed} || 0;
+  $speed *= $::opts{"speed-scaling"};
+  $speed;
 }
 
 sub actual_rate
@@ -314,7 +327,7 @@ sub actual_rate
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
   my $price;
-  if($$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
+  if($$option{miner}{name} eq $$mining{miner} && $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
   {
     $price = $$present{price}
   }
@@ -326,9 +339,9 @@ sub actual_speed
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
   my $speed;
-  if($$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
+  if($$option{miner}{name} eq $$mining{miner} && $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
   {
-    $speed = $$present{speed}
+    $speed = $$mining{speed}
   }
   $speed || 0
 }
@@ -337,31 +350,54 @@ sub opportunity_rate
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
-  my $price;
-  if($$opportunities{$$option{market}}{$$option{algo}{name}}{size_pct} < 10)
-  {
+#  if($$opportunities{$$option{market}}{$$option{algo}{name}}{size_pct} < $::opts{"opportunity-threshold"})
+#  {
+#    # opportunity too small
+#  }
 
+  my $opportunity_price = $$opportunities{$$option{market}}{$$option{algo}{name}}{price};
+  my $average_price = $$rates{$$option{market}}{$$option{algo}{name}};
+  my $opportunity_delta = $opportunity_price - $average_price;
+  my $opportunity_variance = 0;
+  $opportunity_variance = $opportunity_delta / $average_price if $average_price;
+  $opportunity_variance *= 100;
+  $opportunity_variance *= -1;
+  
+  my $price = 0;
+  if($opportunity_variance > $::opts{"opportunity-threshold"})
+  {
+    # opportunity too small
   }
+#  elsif($$opportunities{$$option{market}}{$$option{algo}{name}}{price} < $$rates{$$option{market}}{$$option{algo}{name}})
+#  {
+#    # opportunity less than trailing average price
+#  }
   else
   {
-    $price = $$opportunities{$$option{market}}{$$option{algo}{name}}{price};
+    $price = ($opportunity_price + $average_price) / 2;
   }
-  $price || 0
+
+  $price *= $::opts{"price-scaling"};
+  $price
 }
 
 sub opportunity_speed
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
-  $$option{algo}{speed} || 0
+  average_speed(@_)
 }
 
 sub predicted_rate
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
-  return actual_rate(@_) if $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market};
-  return average_rate(@_) if $::opts{method} eq "average";
+  if($::opts{"use-actual-price"} && $$option{miner}{name} eq $$mining{miner} && $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
+  {
+    return actual_rate(@_)
+  }
+
+  return average_rate(@_) if $::opts{"price-method"} eq "trailing";
   return opportunity_rate(@_)
 }
 
@@ -369,7 +405,11 @@ sub predicted_speed
 {
   my ($mining, $option, $rates, $opportunities, $present) = @_;
 
-  return actual_speed(@_) if $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market};
+  if($::opts{"use-actual-speed"} && $$option{miner}{name} eq $$mining{miner} && $$option{algo}{name} eq $$mining{algo} && $$option{market} eq $$mining{market})
+  {
+    return actual_speed(@_)
+  }
+
   return average_speed(@_)
 }
 

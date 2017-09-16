@@ -41,18 +41,18 @@ our %algos = (
   , "decred" =>         { code => 21 , units => 'TH/s'  , port => 3354 }
   , "equihash" =>       { code => 24 , units => 'MSol/s', port => 3357 }
   , "hodl" =>           { code => 19 , units => 'KH/s'  , port => 3352 }
-  , "keccak" =>         { code => 5  , units => 'GH/s'  , port => 3338 }
+  , "keccak" =>         { code => 5  , units => 'TH/s'  , port => 3338 }
   , "lbry" =>           { code => 23 , units => 'TH/s'  , port => 3356 }
   , "lyra2re" =>        { code => 9  , units => 'GH/s'  , port => 3342 }
   , "lyra2rev2" =>      { code => 14 , units => 'GH/s'  , port => 3347 }
   , "neoscrypt" =>      { code => 8  , units => 'GH/s'  , port => 3341 }
   , "nist5" =>          { code => 7  , units => 'GH/s'  , port => 3340 }
   , "pascal" =>         { code => 25 , units => 'TH/s'  , port => 3358 }
-  , "quark" =>          { code => 12 , units => 'GH/s'  , port => 3345 }
+  , "quark" =>          { code => 12 , units => 'TH/s'  , port => 3345 }
   , "qubit" =>          { code => 11 , units => 'GH/s'  , port => 3344 }
   , "sha256" =>         { code => 1  , units => 'PH/s'  , port => 3334 }
   , "sia" =>            { code => 27 , units => 'TH/s'  , port => 3360 }
-  , "x11" =>            { code => 3  , units => 'GH/s'  , port => 3336 }
+  , "x11" =>            { code => 3  , units => 'TH/s'  , port => 3336 }
   , "x11gost" =>        { code => 26 , units => 'GH/s'  , port => 3359 }
   , "x13" =>            { code => 4  , units => 'GH/s'  , port => 3337 }
   , "x15" =>            { code => 6  , units => 'GH/s'  , port => 3339 }
@@ -240,19 +240,28 @@ sub stats_global_current
   stats_global('stats.global.current', 'usa')
 }
 
+#
 # this nicehash api doesnt report accurate accepted rate until the miner has
 # been submitting shares over a period of 5 minutes
+#
+# in addition the data for the current algorithm seems to reflect only the
+# previous 5 minutes
+#
 sub current_performance
 {
-  my ($addr, $algo, $market) = @_;
+  my ($addr, $algo, $market, $started) = @_;
+
+  my $dur = time() - $started;
+  if((time() - $started) < (60 * 5))
+  {
+    return { price => 0, speed => 0 }; # no point
+  }
 
   my $js = nicecurl('stats.provider.ex'
     , addr => $addr
-#   , location => $regions{$market}{code}
-#   , algo => $algos{$algo}{code}
-    , from => (time() - 300)
+    , from => (time() - (60 * 5))
   );
-  return if not $js;
+  return undef if not $js;
 
   for my $result (@{$$js{current}})
   {
@@ -261,9 +270,9 @@ sub current_performance
       my $price = normalize_price($$result{suffix}, $$result{profitability});
       my $accepted = 0;
       $accepted = $$result{data}[0]{"a"} if $#{$$result{data}} >= 0;
-      $accepted = normalize_hashrate($$result{suffix}, $accepted);
+      $accepted = normalize_hashrate($$result{suffix}, $accepted) if $accepted;
 
-      return { price => $price, speed => $accepted };
+      return { price => $price, speed => $accepted || 0 };
     }
   }
 
@@ -283,6 +292,7 @@ sub orders_summarize
     if(!$js)
     {
       $failures++;
+      sleep 3;
       next;
     }
 
@@ -323,12 +333,16 @@ sub orders_summarize
     {
       $price = $opportunity_price / $opportunity_speed;
     }
+    $price = normalize_algo_price($algo, $price);
+
     my $size_pct = 0;
     $size_pct = $opportunity_speed / $total_accepted_speed if $total_accepted_speed;
+    $size_pct *= 100;
+
     $$opportunities{$algo}{total} = $total_accepted_speed;
     $$opportunities{$algo}{size} = $opportunity_speed;
     $$opportunities{$algo}{size_pct} = $size_pct * 100;
-    $$opportunities{$algo}{price} = normalize_algo_price($algo, $price);
+    $$opportunities{$algo}{price} = $price;
 
     # average price paid per hashrate
     my $sum = 0;

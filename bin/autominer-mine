@@ -38,16 +38,32 @@ use miner;
 use perf;
 use xlinux;
 use ring;
+use history;
 
 our $verbose = 0;
 our %opts = (
-    'period'        => 60 * 6         # 6 minutes
-  , 'window'        => 'm5'           # trailing 5 minute average
-  , 'retention'     => 10 * 24 * 30   # one month
-  , 'samples'       => 60 * 10        # ten minutes
-  , 'profile'       => 'default'
-  , 'worker'        => ''
-  , 'method'        => 'opportunity'
+    'period'          => 60 * 6         # 6 minutes
+  , 'retention'       => 10 * 24 * 30   # one month
+  , 'profile'         => 'default'
+  , 'worker'          => ''
+
+  , 'nicehash-usa'    => 1
+  , 'nicehash-eu'     => 1
+
+  , 'price-method'    => 'opportunity'  # trailing | opportunity
+  , 'trailing-window' => 'm5'           # trailing 5 minute average
+
+  , 'use-actual-price'   => 1
+  , 'use-actual-speed'   => 1
+  , 'historical-samples' => 60 * 10     # ten minutes
+
+  , 'switching-threshold' => 0
+  , 'opportunity-threshold' => 0
+  , 'intensity-scaling' => 1
+  , 'speed-scaling' => 1
+  , 'price-scaling' => 1
+
+, 'speed-samples' => 1
 
   # miner executables expected to be in $PATH by default
   , 'ccminer_path'              => 'ccminer'
@@ -55,32 +71,45 @@ our %opts = (
   , 'ethminer_path'             => 'ethminer'
   , 'nheqminer_cuda_path'       => 'nheqminer_cuda'
   , 'sgminer_path'              => 'sgminer'
+  , 'eqm_path'                  => 'eqm'
 );
 my %optargs = (
     'help|h'            => \$opts{help}
   , 'version|V'         => \$opts{version}
   , 'verbose|v'         => \$opts{verbose}
 
-, 'method=s'          => \$opts{method}
+, 'price-method=s'      => \$opts{"price-method"}
+  , 'trailing-window=s' => \$opts{"trailing-window"}
+
+, 'use-actual-price=i'    => \$opts{"use-actual-price"}
+, 'use-actual-speed=i'    => \$opts{"use-actual-speed"}
+  , 'historical-samples=i'  => \$opts{"historical-samples"}      # samples to use in historical speed calculation
+
+, 'switching-threshold=i' => \$opts{"switching-threshold"}
+, 'opportunity-threshold=i' => \$opts{"opportunity-threshold"}
 
   , 'data-dir=s'        => \$opts{datadir}
   , 'profile=s'         => \$opts{profile}
-  , 'payout-address=s'  => \$opts{payout_address}
+  , 'payout-address=s'  => \$opts{"payout-address"}
   , 'worker=s'          => \$opts{worker}
   , 'period=i'          => \$opts{period}
   , 'cards=s'           => \$opts{cards}
   , 'retention=i'       => \$opts{retention}    # benchmark files to retain
-  , 'samples=i'         => \$opts{samples}      # samples to use in speed calculation
-  , 'window=s'          => \$opts{window}
 
-  , 'nicehash-usa'      => \$opts{"nicehash-usa"}
-  , 'nicehash-eu'       => \$opts{"nicehash-eu"}
+  , 'nicehash-usa=i'    => \$opts{"nicehash-usa"}
+  , 'nicehash-eu=i'     => \$opts{"nicehash-eu"}
 
   , 'ccminer-path=s'              => \$opts{ccminer_path}
   , 'ccminer-cryptonight-path=s'  => \$opts{ccminer_cryptonight_path}
   , 'ethminer-path=s'             => \$opts{ethminer_path}
   , 'nheqminer-cuda-path=s'       => \$opts{nheqminer_cuda_path}
   , 'sgminer-path=s'              => \$opts{sgminer_path}
+  , 'eqm-path=s'                  => \$opts{eqm_path}
+
+  , 'intensity-scaling=f' => \$opts{"intensity-scaling"}
+  , 'speed-scaling=f' => \$opts{"speed-scaling"}
+  , 'speed-samples=i' => \$opts{"speed-samples"}
+  , 'price-scaling=f' => \$opts{"price-scaling"}
 );
 configure(\%optargs, \%opts);
 
@@ -93,26 +122,33 @@ autominer - an autoswitching miner for linux, version $release::number
 
 usage: autominer mine [options]
 
- --help                    print this help text
- --version                 print the version number, exit
- --verbose                 print commands as they are run
- --quiet                   dont echo output from the miner to stdout
+ --help                     print this help text
+ --version                  print the version number, exit
+ --verbose                  print commands as they are run
+ --quiet                    dont echo output from the miner to stdout
 
 required
- --payout-address <addr>   where to send mining rewards - part of the username mining parameter
- --cards <device-ids>      comma-separated list of devices ids to mine with
- --data-dir <path>         base location for perf, history and market data
+ --payout-address <addr>    where to send mining rewards - part of the username mining parameter
+ --cards <device-ids>       comma-separated list of devices ids to mine with
+ --data-dir <path>          base location for perf, history and market data
 
-required - at least one
- --nicehash-usa            consider mining on algos in nicehash.usa
- --nicehash-eu             consider mining on algos in nicehash.eu
+required - one or more
+ --nicehash-usa             consider mining on algos in nicehash.usa
+ --nicehash-eu              consider mining on algos in nicehash.eu
 
 optional
- --profile <name>          separate config file, perf and history data
- --worker <name>           name of this mining rig / worker - part of the username mining parameter
- --period <seconds>        how frequently to re-evaluate what to mine
- --retention <number>      number of per-period sessions to retain
- --samples <seconds>       number of trailing perf samples to estimate future performance from
+ --profile <name>           separate config file, perf and history data
+ --worker <name>            name of this mining rig / worker - part of the username mining parameter
+ --period <seconds>         how frequently to re-evaluate what to mine
+ --retention <number>       number of per-period sessions to retain
+
+ --price-method opportunity  use opportunity price
+ --price-method trailing     use trailing average price paid to all sellers
+ --trailing-window <seconds> for price-method=trailing, which window to use
+
+ --historical-samples <seconds> for speed-method historical, number of trailing perf samples to estimate future performance from
+
+ --switching-threshold <pct> only switch if the predicted profit difference meets or exceeds the threshold
 
 optional - miner executables
  --ccminer-path <path>              path to the ccminer executable
@@ -120,6 +156,7 @@ optional - miner executables
  --ethminer-path <path>             path to the ethminer executable
  --nheqminer-cuda-path <path>       path to the nheqminer_cuda executable
  --sgminer-path <path>              path to the sgminer executable
+ --eqm-path <path>                  path to the eqm executable
 
 For more information visit https://github.com/hossbeast/autominer
 HELP
@@ -131,7 +168,7 @@ if($opts{version})
   exit 0;
 }
 
-die "missing required config --payout-address" unless $opts{payout_address};
+die "missing required config --payout-address" unless $opts{"payout-address"};
 die "missing required config --data-dir" unless $opts{datadir};
 die "missing required config --cards" unless defined $opts{"comma-cards"};
 die "missing required config --nicehash-usa or --nicehash-eu" unless $opts{"nicehash-usa"} or $opts{"nicehash-eu"};
@@ -141,23 +178,30 @@ if($verbose)
   printf("parameters\n");
   printf("%20s %s\n", "profile", $opts{profile});
   printf("%20s %s\n", "data-dir", $opts{datadir});
-  printf("%20s %s\n", "payout-address", $opts{payout_address});
+  printf("%20s %s\n", "payout-address", $opts{"payout-address"});
   printf("%20s %s\n", "worker", $opts{worker});
   printf("%20s %s\n", "cards", $opts{"comma-cards"});
   printf("%20s %s\n", "evaluation period", $opts{period});
-  printf("%20s %s\n", "method", $opts{method});
-  printf("%20s %s\n", "samples", $opts{samples});
-  printf("%20s %s\n", "window", $opts{window});
+  printf("%20s %s\n", "price-method", $opts{"price-method"});
+  printf("%20s %s\n", "trailing-window", $opts{"trailing-window"});
+  printf("%20s %s\n", "historical-samples", $opts{"historical-samples"});
   printf("%20s %s\n", "retention", $opts{retention});
   printf("%20s %s\n", "nicehash-usa", $opts{"nicehash-usa"} ? "yes" : "no");
   printf("%20s %s\n", "nicehash-eu", $opts{"nicehash-eu"} ? "yes" : "no");
+  printf("%20s %s\n", "use-actual-price", $opts{"use-actual-price"} ? "yes" : "no");
+  printf("%20s %s\n", "use-actual-speed", $opts{"use-actual-speed"} ? "yes" : "no");
 }
 
 $SIG{CHLD} = 'IGNORE';
 
 # ensure directories exist
 mkdirp("$opts{datadir}/bench/$opts{profile}");
-mkdirp("$opts{datadir}/history/$opts{profile}");
+mkdirp("$opts{datadir}/history/profile/$opts{profile}");
+mkdirp("$opts{datadir}/history/payout-address/" . $opts{"payout-address"} . "/profile/$opts{profile}");
+if($opts{worker})
+{
+  mkdirp("$opts{datadir}/history/worker/$opts{worker}/profile/$opts{profile}");
+}
 mkdirp("/tmp/run/autominer/aggregator");
 
 # load miners
@@ -179,28 +223,16 @@ for my $miner (values %miners)
   }
 }
 
-# initialize history files
-my $history_dir = "$opts{datadir}/history/$opts{profile}";
-
-my $history_head = readlink("$history_dir/head");
-$history_head = int $history_head if $history_head;
-
-my $history_tail = readlink("$history_dir/tail");
-$history_tail = int $history_tail if $history_tail;
-
-# prune history files outside the retention window
-if(defined $history_head and defined $history_tail)
+my %histories;
+$histories{profile} = history_init("profile", $opts{profile});
+$histories{"payout-address"} = history_init("payout-address", $opts{"payout-address"}, $opts{profile});
+if($opts{worker})
 {
-  while(ring_sub($history_head, $history_tail, 0xffff) > $::opts{retention})
-  {
-    uxunlink(sprintf("%s/%05u", $history_dir, $history_tail));
-    $history_tail = ring_add($history_tail, 1, 0xffff);
-  }
-  symlinkf(sprintf("%05u", $history_tail), "$history_dir/tail");
+  $histories{worker} = history_init("worker", $opts{worker}, $opts{profile});
 }
 
 my $quit = 0;
-my $mining = { algo => '', market => '', miner => '' };
+my $mining = { algo => '', market => '', miner => '', started => 0, speeds => [] };
 my %rates;
 my %opportunities;
 my $present = undef;
@@ -214,6 +246,7 @@ $SIG{CHLD} = sub {
   while((my $pid = waitpid(-1, WNOHANG)) > 0) {
     my $exit = $? >> 8;
     my $sig = $? & 127;
+
     if($pid == $miner_pid)
     {
       printf("CHLD miner-pid=$pid, status=$?, exit=$exit, signal=$sig\n");
@@ -234,6 +267,9 @@ $SIG{CHLD} = sub {
       printf("CHLD nicehash-aggregator-usa-pid=$pid, status=$?, exit=$exit, signal=$sig\n");
       $nicehash_aggregator_usa_pid = 0;
     }
+
+    # affirmative murder
+    kill 9, $pid;
   }
 };
 
@@ -305,15 +341,16 @@ sub getopportunities
 }
 
 # load market stats
-$rates{"nicehash-usa"} = getrates("nicehash-usa", $opts{window}) if $opts{"nicehash-usa"};
+$rates{"nicehash-usa"} = getrates("nicehash-usa", $opts{"trailing-window"}) if $opts{"nicehash-usa"};
 $opportunities{"nicehash-usa"} = getopportunities("nicehash-usa") if $opts{"nicehash-usa"};
 
-$rates{"nicehash-eu"} = getrates("nicehash-eu", $opts{window}) if $opts{"nicehash-eu"};
+$rates{"nicehash-eu"} = getrates("nicehash-eu", $opts{"trailing-window"}) if $opts{"nicehash-eu"};
 $opportunities{"nicehash-eu"} = getopportunities("nicehash-eu") if $opts{"nicehash-eu"};
 
 while(!$quit)
 {
-  # evaluate mining options
+  # assemble mining options
+  my $current_option;
   my @options;
   for my $market ("nicehash-usa", "nicehash-eu")
   {
@@ -336,14 +373,22 @@ while(!$quit)
         $$option{actual_rate} = actual_rate($mining, $option, \%rates, \%opportunities, $present);
         $$option{predicted_rate} = predicted_rate($mining, $option, \%rates, \%opportunities, $present);
         $$option{predicted_profit} = predicted_profit($mining, $option, \%rates, \%opportunities, $present);
+        $$option{average_speed} = average_speed($mining, $option, \%rates, \%opportunities, $present);
+        $$option{actual_speed} = actual_speed($mining, $option, \%rates, \%opportunities, $present);
 
         push @options, $option;
+
+        if($$mining{market} eq $$option{market} && $$mining{miner} eq $$option{miner}{name} && $$mining{algo} eq $$option{algo}{name})
+        {
+          $current_option = $option;
+        }
       }
     }
   }
 
+  # select the best option, order of descending profit
   @options = sort { $$b{predicted_profit} <=> $$a{predicted_profit} } @options;
-  my $option;
+  my $option = undef;
   for my $o (@options)
   {
     if($option) { }
@@ -351,36 +396,47 @@ while(!$quit)
     {
       $option = $o;
     }
-    elsif($$o{algo}{name} eq $$mining{algo} && $$o{market} eq $$mining{market})
+    elsif($o == $current_option)
+    {
+      $option = $o;
+    }
+    elsif($$current_option{predicted_profit} == 0)
     {
       $option = $o;
     }
     else
     {
-      my $delta = $$o{predicted_profit} - ($$present{speed} * $$present{price});
-      my $variance = ($delta / ($$present{speed} * $$present{price})) * 100;
+      my $delta = $$o{predicted_profit} - $$current_option{predicted_profit};
+      my $variance = ($delta / $$current_option{predicted_profit}) * 100;
 
-      if($variance >= 15)
+      if($variance >= $opts{"switching-threshold"})
       {
         $option = $o;
       }
     }
+  }
 
+  # print details about the selection
+  for my $o (@options)
+  {
     my $profit = "(no data)";
     if($$o{algo}{speed} != 0xFFFFFFFF) {
       $profit = sprintf("%14.8f", $$o{predicted_profit});
     }
 
-    printf "market %-15s miner %-20s algo %-20s"
+    # skip everything below the profit threshold
+    last if $$o{predicted_profit} == 0;
+
+    printf "%-15s %-20s %-20s"
       , $$o{market}
       , $$o{miner}{name}
       , $$o{algo}{name}
     ;
-    if($$o{algo}{name} eq $$mining{algo} && $$o{market} eq $$mining{market})
+    if($opts{"use-actual-price"} && $$mining{miner} eq $$o{miner}{name} && $$mining{algo} eq $$o{algo}{name} && $$mining{market} eq $$o{market})
     {
       printf(" rate [ %14.8f   %14.8f  (%14.8f)]", $$o{opportunity_rate}, $$o{average_rate}, $$o{actual_rate})
     }
-    elsif($opts{method} eq "average")
+    elsif($opts{"price-method"} eq "trailing")
     {
       printf(" rate [ %14.8f  (%14.8f)  %14s ]", $$o{opportunity_rate}, $$o{average_rate}, $$o{actual_rate})
     }
@@ -388,12 +444,20 @@ while(!$quit)
     {
       printf(" rate [(%14.8f)  %14.8f   %14s ]", $$o{opportunity_rate}, $$o{average_rate}, $$o{actual_rate})
     }
-    printf " * speed %14.8f = profit %-10s"
-      , $$o{algo}{speed}
-      , $profit
-    ;
 
-    if($$o{algo}{name} eq $$mining{algo} && $$o{market} eq $$mining{market})
+    print(" * speed");
+    if($opts{"use-actual-speed"} && $$mining{miner} eq $$o{miner}{name} && $$mining{algo} eq $$o{algo}{name} && $$mining{market} eq $$o{market})
+    {
+      printf(" [ %14.8f  (%14.8f)]", $$o{average_speed}, $$o{actual_speed});
+    }
+    else
+    {
+      printf(" [(%14.8f)  %14.8f ]", $$o{average_speed}, $$o{actual_speed});
+    }
+
+    printf(" = profit %-10s", $profit);
+
+    if($$mining{miner} eq $$o{miner}{name} && $$mining{algo} eq $$o{algo}{name} && $$mining{market} eq $$o{market})
     {
       print(" <<<");  # current option
     }
@@ -427,24 +491,12 @@ while(!$quit)
   syswrite($bench_fh, $perf_summary, length($perf_summary));
 
   # advance the history files
-  $history_head = 0 unless $history_head;
-  $history_head = ring_add($history_head, 1, 0xffff);
-  symlinkf($bench_path, sprintf("%s/%05u", $history_dir, $history_head));
-  symlinkf(sprintf("%05u", $history_head), "$history_dir/head");
-
-  if(not defined $history_tail)
+  for my $history (values %histories)
   {
-    $history_tail = $history_head;
-    symlinkf(sprintf("%05u", $history_tail), "$history_dir/tail");
-  }
-  elsif(ring_sub($history_head, $history_tail, 0xffff) >= $::opts{retention})
-  {
-    uxunlink(sprintf("%s/%05u", $history_dir, $history_tail));
-    $history_tail = ring_add($history_tail, 1, 0xffff);
-    symlinkf(sprintf("%05u", $history_tail), "$history_dir/tail");
+    history_advance($history, $bench_path)
   }
 
-  if($market ne $$mining{market} || $$miner{name} ne $$mining{miner} || $$algo{name} ne $$mining{algo})
+  if($market ne $$mining{market} || $$miner{name} ne $$mining{miner} || $$algo{name} ne $$mining{algo} || !$miner_pid || !$perf_pid)
   {
     miner_env_setup(market => $market, miner => $$miner{name}, algo => $$algo{name});
 
@@ -477,6 +529,8 @@ while(!$quit)
     $$mining{market} = $market;
     $$mining{miner} = $$miner{name};
     $$mining{algo} = $$algo{name};
+    $$mining{started} = time();
+    $#{$$mining{speeds}} = -1;
   }
 
   # read from the perf pipe until the period elapses
@@ -497,6 +551,12 @@ while(!$quit)
     {
       print("miner or perf terminated early!\n");
       last;
+    }
+
+    if($r <= 0)
+    {
+      # happens when the perf process never emits a perf record
+      last if (time() - $T) > ($opts{period} * 1.2);
     }
 
     next unless $r > 0;
@@ -548,18 +608,29 @@ while(!$quit)
   # get performance from nicehash
   while(1)
   {
-    $present = nicehash::current_performance($opts{payout_address}, $$mining{algo}, $$mining{market});
+    $present = nicehash::current_performance($opts{"payout-address"}, $$mining{algo}, $$mining{market}, $$mining{started});
     last if $present;
 
     # throttled
     sleep 3;
   }
 
+  # update mining speed samples for the current option
+  push @{$$mining{speeds}}, $$present{speed};
+  $#{$$mining{speeds}} = $opts{"speed-samples"} - 1 if $#{$$mining{speeds}} >= $opts{"speed-samples"};
+
+  $$mining{speed} = 0;
+  for my $speed (@{$$mining{speeds}})
+  {
+    $$mining{speed} += $speed;
+  }
+  $$mining{speed} /= ($#{$$mining{speeds}}) + 1;
+
   # load market stats
-  $rates{"nicehash-usa"} = getrates("nicehash-usa", $opts{window}) if $opts{"nicehash-usa"};
+  $rates{"nicehash-usa"} = getrates("nicehash-usa", $opts{"trailing-window"}) if $opts{"nicehash-usa"};
   $opportunities{"nicehash-usa"} = getopportunities("nicehash-usa") if $opts{"nicehash-usa"};
 
-  $rates{"nicehash-eu"} = getrates("nicehash-eu", $opts{window}) if $opts{"nicehash-eu"};
+  $rates{"nicehash-eu"} = getrates("nicehash-eu", $opts{"trailing-window"}) if $opts{"nicehash-eu"};
   $opportunities{"nicehash-eu"} = getopportunities("nicehash-eu") if $opts{"nicehash-eu"};
 
   # the header line contains details about the selected option

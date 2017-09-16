@@ -71,7 +71,7 @@ elsif($ARGV[0] eq "mine")
   my $sgminer_dir = (map { chomp ; $_ } `which $ENV{AUTOMINER_SGMINER_PATH} | xargs realpath | xargs dirname`)[0];
   chdir($sgminer_dir) or die "chdir($sgminer_dir) : $!";
 
-  print(" >> sgminer : @cmd\n");
+  print(" >> $$ : @cmd\n");
   exec { $cmd[0] } @cmd;
 }
 elsif($ARGV[0] eq "perf")

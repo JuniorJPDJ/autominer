@@ -1,5 +1,6 @@
 #!/usr/bin/env perl
 
+#
 # Copyright (c) 2017 Todd Freed <todd.freed@gmail.com>
 # 
 # This file is part of autominer.
@@ -15,6 +16,7 @@
 # GNU General Public License for more details.
 # 
 # You should have received a copy of the GNU General Public License
+#
 
 use strict;
 use warnings;
@@ -28,25 +30,40 @@ use util;
 use release;
 override_warn_and_die();
 
+use POSIX;
 use Data::Dumper;
 use File::Find;
-use Time::Piece;
 use config;
+use ring;
 
 our $verbose = 0;
 our %opts = (
-    'datadir'       => $ENV{HOME} . "/.autominer/data"
-  , 'sort'          => 'h3'
-  , 'profile'       => 'default'
+    'profile'           => 'default'
+  , 'bucket-on-algo'    => 1
+  , 'bucket-on-miner'   => 0
+  , 'bucket-on-market'  => 0
 );
 my %optargs = (
-    'help|h'        => \$opts{help}
-  , 'version|V'     => \$opts{version}
-  , 'verbose|v'     => \$opts{verbose}
+    'help|h'                    => \$opts{help}
+  , 'version|V'                 => \$opts{version}
+  , 'verbose|v'                 => \$opts{verbose}
+  , 'profile=s'                 => \$opts{profile}
+  , 'data-dir=s'                => \$opts{"data-dir"}
 
-  , 'data-dir=s'    => \$opts{"datadir"}
-  , 'profile=s'     => \$opts{profile}
-  , 'transitions'   => \$opts{transitions}
+  , 'period-from=i'             => \$opts{"period-from"}
+  , 'period-to=i'               => \$opts{"period-to"}
+  , 'period-trailing=i'         => \$opts{"period-trailing"}
+
+  , 'bucket-on-market!'         => \$opts{"bucket-on-market"}
+  , 'bucket-on-miner!'          => \$opts{"bucket-on-miner"}
+  , 'bucket-on-algo!'           => \$opts{"bucket-on-algo"}
+
+  , 'history-profile=s'         => \$opts{"history-profile"}
+  , 'history-payout-address=s'  => \$opts{"history-payout-address"}
+  , 'history-worker=s'          => \$opts{"history-worker"}
+
+# undocumented debug options
+  , 'purge'                     => \$opts{purge}
 );
 configure(\%optargs, \%opts);
 
@@ -59,16 +76,27 @@ autominer - an autoswitching miner for linux, version $release::number
 
 usage: autominer stats [options]
 
- --help               print this help text
- --version            print the version number, exit
- --verbose            print commands as they are run
+ --help                           print this help text
+ --version                        print the version number, exit
+ --verbose                        print commands as they are run
 
 required
- --data-dir <path>    location for benchark and market data
+ --data-dir <dir>                 locate history at <dir>
 
 optional
- --profile <name>     separate config file and benchmark data
- --transitions        show only transitions
+ --profile <name>                 read config from $ENV{HOME}/.autominer/profile/<name>/config
+
+ --history-profile <name>         show history for the specified profile [default: default]
+ --history-payout-address <addr>  show history for the specified payout address
+ --history-worker <name>          show history for the specified worker
+
+ --period-from <epoch>            period starting at <epoch> [default: 0]
+ --period-until <epoch>           period ending at <epoch>
+ --period-trailing <seconds>      period starting <seconds> seconds ago and ending now
+
+ --bucket-on-algo                 show aggregate stats grouped by algorithm [default: true]
+ --bucket-on-miner                show aggregate stats grouped by miner [default: false]
+ --bucket-on-market               show aggregate stats grouped by market [default: false]
 HELP
   exit 0
 }
@@ -78,135 +106,258 @@ if($opts{version})
   exit 0;
 }
 
+# default history to show is the default profile
+if(!$opts{"history-profile"} && !$opts{"history-payout-address"} && !$opts{"history-worker"})
+{
+  $opts{"history-profile"} = "default";
+}
+
+# convert bounds to epoch
+if($opts{"period-trailing"})
+{
+  $opts{"period-from"} = time() - $opts{"period-trailing"};
+}
+
+my $mining_market = '';
 my $mining_miner = '';
 my $mining_algo = '';
 my $unmatched = 0;
+my $dubious = 0;
+my $unfinished = 0;
+my %buckets;
 
-my $history_dir = "$opts{datadir}/history/$opts{profile}";
-my $wanted = sub {
-  return if $_ eq "." or $_ eq "..";
-
-  # determine whether there was a transition
-  readlink($_) =~ /\/([^\/]+)\/([^\/]+)\/[0-9]+$/;
-my $fname = "$_";
-
-  my $miner = $1;
-  my $algo = $2;
-  my $transition = 0;
-  if($mining_miner ne $miner || $mining_algo ne $algo)
-  {
-    $transition = 1;
-  }
-
-  if($opts{transitions} and not $transition)
-  {
-    return;
-  }
-
-  my $fh;
-  unless(open($fh, "<$history_dir/$_"))
-  {
-    $unmatched++;
-    return;
-  }
-
-  my $header;
-  my $footer;
-  my $line;
-  while(1)
-  {
-    my $s = <$fh>;
-    last unless $s;
-    chomp $s;
-    $line = $s if $header;
-    $header = $s unless $header;
-  }
-  $footer = $line;
-  close($fh);
-
-  if(not $header)
-  {
-    $unmatched++;
-    return;
-  }
-
-  my $re = qr/
-    ^
-    (?:v1.0|v1.1|v1.2)
-    \s+ ([0-9]+)                          # 1 unix timestamp
-    \s+ ([a-zA-Z-_]+)                     # 2 market
-    \s+ (?:[a-z0-9-_]+)\/(?:[a-z0-9-_]+)
-    \s* \[
-    \s* \(?\s*([0-9.]+)\s*\)?             # 3 opportunity rate
-    \s* \(?\s*([0-9.]+)\s*\)?             # 4 average rate
-    \s* \(?\s*([0-9.]+)\s*\)?             # 5 actual rate
-    \s* \]\s+\*
-    \s+ ([0-9.]+)\s+=                     # 6 average speed
-    \s+ ([0-9.]+)                         # 7 predicted profit
-    $
-  /xi;
-
-  if($header !~ $re)
-  {
-    $unmatched++;
-    return;
-  }
-
-  my $start = $1;
-  my $market = $2;
-  my $opportunity_rate = $3;
-  my $average_rate = $4;
-  my $actual_rate = $5;
-  my $average_speed = $6;
-  my $predicted_profit = $7;
-  my $mtime = (stat($_))[9];
-
-  $re = qr/
-    ^
-    \s+ ([0-9.]+)\s+\*                    # 1 speed
-    \s+ ([0-9.]+)\s+=                     # 2 rate
-    \s+ ([0-9.]+)                         # 3 profit
-    $
-  /xi;
-
-  my $actual_speed;
-  my $actual_profit;
-  my $profit_variance = 0;
-  if($footer and $footer =~ $re)
-  {
-    $actual_speed = $1;
-    $actual_rate = $2;
-    $actual_profit = $3;
-
-    my $profit_delta = $actual_profit - $predicted_profit;
-    $profit_variance = $profit_delta / $predicted_profit;
-    $profit_variance *= 100;
-  }
-
-  printf("%17s", localtime($start)->strftime("%D %T"));
-  printf(" - %17s", localtime($mtime)->strftime("%D %T"));
-  printf(" %30s", "$miner/$algo");
-  printf(" %14.8f BTC/day", $actual_profit) if $actual_profit;
-  printf(" variance %-4d%%", $profit_variance);
-  printf(" predicted %14.8f", $opportunity_rate);
-  printf(" * %14s", "(no data)") if $average_speed == 0xffffffff;
-  printf(" * %14.8f", $average_speed) if $average_speed != 0xffffffff;
-  printf(" = %14s", "(unknown)") if $average_speed == 0xffffffff;
-  printf(" = %14.8f", $predicted_profit) if $average_speed != 0xffffffff;
-  print(" <--") if $transition;
-  print("\n");
-
-  $mining_miner = $miner;
-  $mining_algo = $algo;
-};
-my $preprocess = sub {
-  sort { int($a) <=> int($b) } # increasing order
-  grep { /^[0-9]+$/ } @_
-};
-chdir($history_dir) or die "chdir($history_dir) : $!";
-finddepth({ wanted => $wanted, preprocess => $preprocess }, ".");
-
-if ($unmatched and $verbose)
+my @history_dirs;
+if($opts{"history-profile"})
 {
-  print("ignored $unmatched records\n")
+  die "expected only one of --history-{payout-address,profile,worker}" if $opts{"history-payout-address"} or $opts{"history-worker"};
+  push @history_dirs, $opts{"data-dir"} . "/history/profile/" . $opts{"history-profile"};
+}
+elsif($opts{"history-payout-address"})
+{
+  die "expected only one of --history-{payout-address,profile,worker}" if $opts{"history-profile"} or $opts{"history-worker"};
+
+  my $base = $opts{"data-dir"} . "/history/payout-address/" . $opts{"history-payout-address"} . "/profile";
+  opendir(my $dh, $base) or die "opendir($base) : $!";
+  while(readdir $dh)
+  {
+    next if $_ eq "." or $_ eq "..";
+    push @history_dirs, "$base/$_";
+  }
+  closedir $dh;
+}
+elsif($opts{"history-worker"})
+{
+  die "expected only one of --history-{payout-address,profile,worker}" if $opts{"history-profile"} or $opts{"history-payout-address"};
+
+  my $base = $opts{"data-dir"} . "/history/worker/" . $opts{"history-worker"} . "/profile";
+  opendir(my $dh, $base) or die "opendir($base) : $!";
+  while(readdir $dh)
+  {
+    next if $_ eq "." or $_ eq "..";
+    push @history_dirs, "$base/$_";
+  }
+  closedir $dh;
+}
+
+for my $history_dir (@history_dirs)
+{
+  my($head, $tail) = ring_init($history_dir, 0xffff);
+  if(defined($head) and defined($tail))
+  {
+    my $x = ring_sub($tail, 1, 0xffff);
+
+    while(1)
+    {
+      last if $x == $head;
+      $x = ring_add($x, 1, 0xffff);
+
+      my $path = sprintf("%s/%05u", $history_dir, $x);
+
+      my $fh;
+      next unless(open($fh, $path));
+
+      my $header;
+      my $footer;
+      my $line;
+      while(1)
+      {
+        my $s = <$fh>;
+        last unless $s;
+        chomp $s;
+        $line = $s if $header;
+        $header = $s unless $header;
+      }
+      $footer = $line;
+      close($fh);
+
+      if(not $header)
+      {
+        $unmatched++;
+        unlink $path if $opts{purge};
+        next;
+      }
+
+      my $re = qr/
+        ^
+        (?:v1.0|v1.1|v1.2)
+        \s+ ([0-9]+)                          # 1 unix timestamp
+        \s+ ([a-zA-Z-_]+)                     # 2 market
+        \s+ ([a-z0-9-_]+)\/([a-z0-9-_]+)      # 3 miner 4 algo
+        \s* \[
+        \s* (\()?\s*([0-9.]+)\s*\)?           # 5|6 opportunity rate
+        \s* (\()?\s*([0-9.]+)\s*\)?           # 7|8 average rate
+        \s* (\()?\s*([0-9.]+)\s*\)?           # 9|10 actual rate
+        \s* \]\s+\*
+        \s+ ([0-9.]+)\s+=                     # 11 average speed
+        \s+ ([0-9.]+)                         # 12 predicted profit
+        $
+      /xi;
+
+      if($header !~ $re)
+      {
+        $unmatched++;
+        unlink $path if $opts{purge};
+        next;
+      }
+
+      my $start = int $1;
+      my $market = $2;
+      my $miner = $3;
+      my $algo = $4;
+      my $used_opportunity_rate = $5;
+      my $initial_opportunity_rate = $6;
+      my $used_average_rate = $7;
+      my $initial_average_rate = $8;
+      my $used_actual_rate = $9;
+      my $initial_actual_rate = substr($header, $-[10], $+[10] - $-[10]);
+      my $initial_average_speed = substr($header, $-[11], $+[11] - $-[11]);
+      my $predicted_profit = substr($header, $-[12], $+[12] - $-[12]);
+      my $mtime = (stat($path))[9];
+
+      next if $opts{"period-from"} && $start < $opts{"period-from"};
+      next if $opts{"period-to"} && $mtime > $opts{"period-to"};
+
+      my $transition = 0;
+      if($mining_market ne $market || $mining_miner ne $miner || $mining_algo ne $algo)
+      {
+        $transition = 1;
+      }
+
+      $re = qr/
+        ^
+        \s+ ([0-9.]+)\s+\*                    # 1 speed
+        \s+ ([0-9.]+)\s+=                     # 2 rate
+        \s+ ([0-9.]+)                         # 3 profit
+        $
+      /xi;
+
+      if(!$footer || $footer !~ $re)
+      {
+        $unfinished++ if $x != $head;
+        next;
+      }
+
+      my $actual_rate = $1;
+      my $actual_speed = $2;
+      my $actual_profit = $3;
+
+      # rate
+      my $predicted_rate;
+      $predicted_rate = $initial_actual_rate if $used_actual_rate;
+      $predicted_rate = $initial_average_rate if $used_average_rate;
+      $predicted_rate = $initial_opportunity_rate if $used_opportunity_rate;
+
+      my $rate_delta = $actual_rate - $predicted_rate;
+      my $rate_variance = 0;
+      $rate_variance = $rate_delta / $predicted_rate if $predicted_rate != 0;
+      $rate_variance *= 100;
+
+      # speed
+      my $predicted_speed = $initial_average_speed;
+
+      my $speed_delta = $actual_speed - $predicted_speed;
+      my $speed_variance = 0;
+      $speed_variance = $speed_delta / $predicted_speed if $predicted_speed != 0;
+      $speed_variance *= 100;
+
+      # profit
+      my $profit_delta = $actual_profit - $predicted_profit;
+      my $profit_variance = 0;
+      $profit_variance = $profit_delta / $predicted_profit if $predicted_profit != 0;
+      $profit_variance *= 100;
+
+      if($profit_variance > 90 || $profit_variance < -90)
+      {
+        $dubious++;
+        next;
+      }
+
+      printf("profit %12.8f (%6.2f%%)", $actual_profit, $profit_variance);
+      printf(" rate %12.8f (%6.2f%%)", $actual_rate, $rate_variance);
+      printf(" speed %12.8f (%6.2f%%)", $actual_speed, $speed_variance);
+
+      printf(" %12s", $market);
+      printf(" %30s", "$miner/$algo");
+      
+      my $bucket = '';
+      for my $tag (qw|market miner algo|)
+      {
+        next unless $opts{"bucket-on-$tag"};
+        $bucket .= ' ' if $bucket;
+        $bucket .= "$tag:" . eval('$' . $tag);
+      }
+
+      for my $b ($bucket, "ALL")
+      {
+        next unless $b;
+        $buckets{$b}{start} = $start unless $buckets{$b}{start};
+        $buckets{$b}{end} = $mtime;
+        $buckets{$b}{predicted_rate} += $predicted_rate;
+        $buckets{$b}{actual_rate} += $actual_rate;
+        $buckets{$b}{rate_variance} += $rate_variance;
+        $buckets{$b}{predicted_speed} += $predicted_speed;
+        $buckets{$b}{actual_speed} += $actual_speed;
+        $buckets{$b}{speed_variance} += $speed_variance;
+        $buckets{$b}{predicted_profit} += $predicted_profit;
+        $buckets{$b}{actual_profit} += $actual_profit;
+        $buckets{$b}{profit_variance} += $profit_variance;
+        $buckets{$b}{records} += 1;
+      }
+      print(" <--") if $transition;
+      print("\n");
+
+      $mining_market = $market;
+      $mining_miner = $miner;
+      $mining_algo = $algo;
+    }
+  }
+}
+
+for my $b (sort { $b cmp $a } keys %buckets)
+{
+  $buckets{$b}{predicted_rate} /= $buckets{$b}{records};
+  $buckets{$b}{actual_rate} /= $buckets{$b}{records};
+  $buckets{$b}{rate_variance} /= $buckets{$b}{records};
+  $buckets{$b}{predicted_speed} /= $buckets{$b}{records};
+  $buckets{$b}{actual_speed} /= $buckets{$b}{records};
+  $buckets{$b}{speed_variance} /= $buckets{$b}{records};
+  $buckets{$b}{predicted_profit} /= $buckets{$b}{records};
+  $buckets{$b}{actual_profit} /= $buckets{$b}{records};
+  $buckets{$b}{profit_variance} /= $buckets{$b}{records};
+
+  print("\n");
+  printf("bucket $b\n");
+  printf("%10s %17s or %d\n", "from", POSIX::strftime("%D %T", localtime($buckets{$b}{start})), $buckets{$b}{start});
+  printf("%10s %17s or %d\n", "to",POSIX::strftime("%D %T", localtime($buckets{$b}{end})), $buckets{$b}{end});
+  printf("%10s %d\n", "records", $buckets{$b}{records});
+  printf("%10s actual %12.8f predicted %12.8f variance %6.2f%%\n", "rate", $buckets{$b}{actual_rate}, $buckets{$b}{predicted_rate}, $buckets{$b}{rate_variance});
+  printf("%10s actual %12.8f predicted %12.8f variance %6.2f%%\n", "speed", $buckets{$b}{actual_speed}, $buckets{$b}{predicted_speed}, $buckets{$b}{speed_variance});
+  printf("%10s actual %12.8f predicted %12.8f variance %6.2f%%\n", "profit", $buckets{$b}{actual_profit}, $buckets{$b}{predicted_profit}, $buckets{$b}{profit_variance});
+}
+
+if(($unmatched || $dubious || $unfinished) and $verbose)
+{
+  print STDERR ("skipped $unfinished unfinished records\n") if $unfinished;
+  print STDERR ("skipped $dubious dubious records\n") if $dubious;
+  print STDERR ("skipped $unmatched unrecognizable records\n") if $unmatched;
 }

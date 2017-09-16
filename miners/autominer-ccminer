@@ -66,6 +66,13 @@ elsif($ARGV[0] eq "mine")
   $intensity = 20 if $ENV{AUTOMINER_ALGO} eq "x13";
   $intensity = 20 if $ENV{AUTOMINER_ALGO} eq "x15";
 
+  if($ENV{AUTOMINER_INTENSITY_SCALING})
+  {
+    $intensity *= $ENV{AUTOMINER_INTENSITY_SCALING};
+    $intensity = int($intensity);
+#    $intensity = 15;
+  }
+
   my @cmd = (
       "$ENV{AUTOMINER_CCMINER_PATH}"
     , "-o", "stratum+tcp://$ENV{AUTOMINER_ALGO}.$ENV{AUTOMINER_NICEHASH_REGION}.nicehash.com:$ENV{AUTOMINER_PORT}"
@@ -86,7 +93,7 @@ elsif($ARGV[0] eq "mine")
     push @cmd, "-d", $ENV{AUTOMINER_CARDS_COMMAS};
   }
 
-  print STDERR (" >> ccminer : @cmd\n");
+  print STDERR (" >> $$ : @cmd\n");
 
   POSIX::dup2(1, 2) or die;
   exec { $cmd[0] } @cmd;

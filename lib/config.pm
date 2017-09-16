@@ -51,18 +51,24 @@ sub apply_config_file
 
 sub configure
 {
-  my ($optargs, $opts) = @_;
+  my ($optargs, $opts, %kw) = @_;
 
-  # base config file
-  apply_config_file("$ENV{HOME}/.autominer/config", $optargs);
+  unless($kw{no_config_files})
+  {
+    # base config file
+    apply_config_file("$ENV{HOME}/.autominer/config", $optargs);
 
-  # apply only the profile from the cmdline
-  my %args = ( 'profile=s' => $$optargs{'profile=s'} );
-  GetOptionsFromArray(\@ARGV, %args);
+    # apply only the profile from the cmdline
+    my %args = ( 'profile=s' => $$optargs{'profile=s'} );
+    GetOptionsFromArray(\@ARGV, %args);
 
-  # per-profile config file
-  my $path = "$ENV{HOME}/.autominer/profile/$$opts{profile}/config";
-  apply_config_file($path, $optargs) if -f $path;
+    # per-profile config file
+    if($$opts{profile})
+    {
+      my $path = "$ENV{HOME}/.autominer/profile/$$opts{profile}/config";
+      apply_config_file($path, $optargs) if -f $path;
+    }
+  }
 
   # apply cmdline
   GetOptionsFromArray(\@ARGV, %$optargs);

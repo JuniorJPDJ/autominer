@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU General Public License
 
 #
-# autominer wrapper for https://github.com/nicehash/nheqminer
+# autominer wrapper for https://www.nicehash.com/tools/eqm_v1.0.4c_Linux_Ubuntu16.zip
 #
 
 use strict;
@@ -27,8 +27,10 @@ use POSIX;
 
 if($ARGV[0] eq "configured")
 {
-  system("$ENV{AUTOMINER_NHEQMINER_CUDA_PATH} -h 1>/dev/null 2>&1");
-  print "yes\n" if $? == 0;
+  if(-r $ENV{AUTOMINER_EQM_PATH})
+  {
+    print "yes\n"
+  }
 }
 elsif($ARGV[0] eq "algos")
 {
@@ -39,11 +41,10 @@ elsif($ARGV[0] eq "mine")
   my $intensity = 25;
 
   my @cmd = (
-      "$ENV{AUTOMINER_NHEQMINER_CUDA_PATH}"
-    , "-l", "$ENV{AUTOMINER_ALGO}.$ENV{AUTOMINER_NICEHASH_REGION}.nicehash.com:$ENV{AUTOMINER_PORT}"
-    , "-u", "$ENV{AUTOMINER_USERNAME}"
-    , "-cb", "12", "16"
-    , "-ct", "64", "128"
+      "$ENV{AUTOMINER_EQM_PATH}"
+    , "-l", "$ENV{AUTOMINER_NICEHASH_REGION}"
+    , "-u", "$ENV{AUTOMINER_PAYOUT_ADDRESS}"
+    , "-w", "$ENV{AUTOMINER_WORKER}"
   );
 
   if(defined $ENV{AUTOMINER_CARDS_SPACES})
@@ -52,23 +53,41 @@ elsif($ARGV[0] eq "mine")
   }
 
   print STDERR (" >> $$ : @cmd\n");
-  # nheqminer_cuda writes benchmark data to stderr
+
+  # eqm writes benchmark data to stderr
   POSIX::dup2(1, 2) or die;
+
   exec { $cmd[0] } @cmd;
 }
 elsif($ARGV[0] eq "perf")
 {
-  while(my $line = <STDIN>)
+  my $buffer = '';
+
+  my $rin = '';
+  vec($rin, 0, 1) = 1;
+  while(1)
   {
-    chomp $line;
+    select(my $rout = $rin, undef, undef, undef);
 
-    # [21:41:34][0x00007fef827db240] Speed [15 sec]: 504.006 I/s, 953.507 Sols/s
-    if($line =~ /Speed.* ([0-9.]+) Sols\/s/i)
+    my $data = '';
+    POSIX::read(0, $data, 0xffff) or die "read(0) : $!";
+    $buffer .= $data;
+
+    # consume full lines
+    while((my $nl = index($buffer, "\n")) >= 0)
     {
-      my $rate = $1;
+      my $line = substr($buffer, 0, $nl + 1, '');
+      chomp $line;
 
-      my $record = sprintf("%10u %s %s/s\n", time() - $^T, $rate, "s");
-      POSIX::write(1, $record, length($record));
+      # [21:41:34][0x00007fef827db240] Speed [15 sec]: 504.006 I/s, 953.507 Sols/s
+      # [20:42:14][0x00007fbf94468200][info] =====> 546.947 I/s, 1023.48 Sols/s
+      if($line =~ /=====.*, ([0-9.]+) Sols\/s/i)
+      {
+        my $rate = $1;
+
+        my $record = sprintf("%10u %s %s/s\n", time() - $^T, $rate, "s");
+        POSIX::write(1, $record, length($record));
+      }
     }
   }
 }

@@ -48,29 +48,44 @@ sub override_warn_and_die
   };
 }
 
+#
 # presumes a SIGCHLD which zeroes the pidref
+#
 sub killfast
 {
   my $pidrefs = shift;
 
+  # ask politely
   for my $pidref (@$pidrefs)
   {
-    kill 15, $$pidref if $$pidref;
+    my $p = $$pidref;
+    kill 15, $p if $p;
   }
 
-  LOOP : while(1)
+  # wait for compliance
+  my $secs = 3;
+  my $interval = .01;
+  my $maxiter = $secs * $interval;
+  my $x;
+  for($x = 0; $x < $maxiter; $x++)
   {
-    select undef, undef, undef, .01;
-    for my $pidref (@$pidrefs)
+    select undef, undef, undef, $interval;
+    my $y;
+    for($y = 0; $y <= $#$pidrefs; $y++)
     {
-      next LOOP if $$pidref;
+      last if ${$$pidrefs[$y]};
     }
-    last;
+
+    last if $y > $#$pidrefs;
   }
 
+  return if $x < $maxiter;
+
+  # murder
   for my $pidref (@$pidrefs)
   {
-    kill 9, $$pidref if $$pidref;
+    my $p = $$pidref;
+    kill 9, $p if $p;
   }
 }
 

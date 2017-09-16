@@ -47,7 +47,7 @@ elsif($ARGV[0] eq "mine")
     push @cmd, "-d", "$ENV{AUTOMINER_CARDS_COMMAS}";
   }
 
-  print STDERR (" >> ccminer-cryptonight : @cmd\n");
+  print STDERR (" >> $$ : @cmd\n");
 
   POSIX::dup2(1, 2) or die;
   exec { $cmd[0] } @cmd;

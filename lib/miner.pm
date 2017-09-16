@@ -112,8 +112,8 @@ sub miner_env_setup
     $ENV{AUTOMINER_PORT} = nicehash::niceport($params{algo});
   }
 
-  $ENV{AUTOMINER_PAYOUT_ADDRESS} = $::opts{payout_address};
-  $ENV{AUTOMINER_USERNAME} = $::opts{payout_address};
+  $ENV{AUTOMINER_PAYOUT_ADDRESS} = $::opts{"payout-address"};
+  $ENV{AUTOMINER_USERNAME} = $::opts{"payout-address"};
   $ENV{AUTOMINER_WORKER} = $::opts{worker};
   $ENV{AUTOMINER_USERNAME} .= "." . $::opts{worker} if $::opts{worker};
   $ENV{AUTOMINER_CARDS_SPACES} = $::opts{"space-cards"};
@@ -132,6 +132,12 @@ sub miner_env_setup
   $ENV{AUTOMINER_ETHMINER_PATH} = $::opts{ethminer_path};
   $ENV{AUTOMINER_NHEQMINER_CUDA_PATH} = $::opts{nheqminer_cuda_path};
   $ENV{AUTOMINER_SGMINER_PATH} = $::opts{sgminer_path};
+  $ENV{AUTOMINER_EQM_PATH} = $::opts{eqm_path};
+
+  if($::opts{"intensity-scaling"})
+  {
+    $ENV{AUTOMINER_INTENSITY_SCALING} = $::opts{"intensity-scaling"}
+  }
 
   my @env;
   while(my($k, $v) = each %ENV)
@@ -139,5 +145,4 @@ sub miner_env_setup
     push @env, "$k=$v" if substr($k, 0, 9) eq "AUTOMINER";
   }
   @env = sort @env;
-# print Dumper \@env;
 }
