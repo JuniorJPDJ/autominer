@@ -348,7 +348,7 @@ for my $b (sort { $b cmp $a } keys %buckets)
   print("\n");
   printf("bucket $b\n");
   printf("%10s %17s or %d\n", "from", POSIX::strftime("%D %T", localtime($buckets{$b}{start})), $buckets{$b}{start});
-  printf("%10s %17s or %d\n", "to",POSIX::strftime("%D %T", localtime($buckets{$b}{end})), $buckets{$b}{end});
+  printf("%10s %17s or %d\n", "to", POSIX::strftime("%D %T", localtime($buckets{$b}{end})), $buckets{$b}{end});
   printf("%10s %d\n", "records", $buckets{$b}{records});
   printf("%10s actual %12.8f predicted %12.8f variance %6.2f%%\n", "rate", $buckets{$b}{actual_rate}, $buckets{$b}{predicted_rate}, $buckets{$b}{rate_variance});
   printf("%10s actual %12.8f predicted %12.8f variance %6.2f%%\n", "speed", $buckets{$b}{actual_speed}, $buckets{$b}{predicted_speed}, $buckets{$b}{speed_variance});

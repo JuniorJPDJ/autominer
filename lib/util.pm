@@ -26,6 +26,7 @@ our @ISA = qw|Exporter|;
 our @EXPORT = (
     qw|run killfast curl filter override_warn_and_die lock_obtain|
   , qw|mkdirp symlinkf|
+  , qw|min|
 );
 
 use File::Temp;
@@ -132,8 +133,7 @@ sub curl
   while(1)
   {
     my $data;
-    my $r = POSIX::read($read_fd, $data, 0xffff);
-    die "read($read_fd) : $!" unless defined $r;
+    my $r = aread($read_fd, $data, 0xffff);
     last if $r == 0;
     $output .= $data;
   }
@@ -168,8 +168,7 @@ sub run
   while(1)
   {
     my $data;
-    my $r = POSIX::read($read_fd, $data, 0xffff);
-    die "read($read_fd) : $!" unless defined $r;
+    my $r = aread($read_fd, $data, 0xffff);
     last if $r == 0;
     $output .= $data;
   }
@@ -217,8 +216,7 @@ sub filter
   while(1)
   {
     my $data;
-    my $r = POSIX::read($out_reader, $data, 0xffff);
-    die "read($out_reader) : $!" unless defined $r;
+    my $r = aread($out_reader, $data, 0xffff);
     last if $r == 0;
     $output .= $data;
   }
@@ -300,6 +298,11 @@ sub symlinkf
 
   uxunlink($linkpath);
   symlink($target, $linkpath) or die("symlink($target, $linkpath) : $!");
+}
+
+sub min
+{
+  ($_[0], $_[1])[$_[0] > $_[1]]
 }
 
 1

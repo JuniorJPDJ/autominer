@@ -42,28 +42,19 @@ use history;
 
 our $verbose = 0;
 our %opts = (
-    'period'          => 60 * 6         # 6 minutes
-  , 'retention'       => 10 * 24 * 30   # one month
-  , 'profile'         => 'default'
-  , 'worker'          => ''
-
-  , 'nicehash-usa'    => 1
-  , 'nicehash-eu'     => 1
+    'profile'         => 'default'
 
   , 'price-method'    => 'opportunity'  # trailing | opportunity
   , 'trailing-window' => 'm5'           # trailing 5 minute average
 
-  , 'use-actual-price'   => 1
-  , 'use-actual-speed'   => 1
   , 'historical-samples' => 60 * 10     # ten minutes
 
-  , 'switching-threshold' => 0
   , 'opportunity-threshold' => 0
   , 'intensity-scaling' => 1
   , 'speed-scaling' => 1
   , 'price-scaling' => 1
 
-, 'speed-samples' => 1
+, 'actual-speed-samples' => 1
 
   # miner executables expected to be in $PATH by default
   , 'ccminer_path'              => 'ccminer'
@@ -92,12 +83,12 @@ my %optargs = (
   , 'profile=s'         => \$opts{profile}
   , 'payout-address=s'  => \$opts{"payout-address"}
   , 'worker=s'          => \$opts{worker}
-  , 'period=i'          => \$opts{period}
+  , 'switching-period=i'=> \$opts{"switching-period"}
   , 'cards=s'           => \$opts{cards}
-  , 'retention=i'       => \$opts{retention}    # benchmark files to retain
+  , 'history-retention=i'       => \$opts{"history-retention"}
 
-  , 'nicehash-usa=i'    => \$opts{"nicehash-usa"}
-  , 'nicehash-eu=i'     => \$opts{"nicehash-eu"}
+  , 'nicehash-usa!'    => \$opts{"nicehash-usa"}
+  , 'nicehash-eu!'     => \$opts{"nicehash-eu"}
 
   , 'ccminer-path=s'              => \$opts{ccminer_path}
   , 'ccminer-cryptonight-path=s'  => \$opts{ccminer_cryptonight_path}
@@ -108,7 +99,7 @@ my %optargs = (
 
   , 'intensity-scaling=f' => \$opts{"intensity-scaling"}
   , 'speed-scaling=f' => \$opts{"speed-scaling"}
-  , 'speed-samples=i' => \$opts{"speed-samples"}
+  , 'actual-speed-samples=i' => \$opts{"actual-speed-samples"}
   , 'price-scaling=f' => \$opts{"price-scaling"}
 );
 configure(\%optargs, \%opts);
@@ -139,8 +130,8 @@ required - one or more
 optional
  --profile <name>           separate config file, perf and history data
  --worker <name>            name of this mining rig / worker - part of the username mining parameter
- --period <seconds>         how frequently to re-evaluate what to mine
- --retention <number>       number of per-period sessions to retain
+ --switching-period <seconds>         how frequently to re-evaluate what to mine
+ --history-retention <number>       number of per-switching-period history files to retain
 
  --price-method opportunity  use opportunity price
  --price-method trailing     use trailing average price paid to all sellers
@@ -172,25 +163,6 @@ die "missing required config --payout-address" unless $opts{"payout-address"};
 die "missing required config --data-dir" unless $opts{datadir};
 die "missing required config --cards" unless defined $opts{"comma-cards"};
 die "missing required config --nicehash-usa or --nicehash-eu" unless $opts{"nicehash-usa"} or $opts{"nicehash-eu"};
-
-if($verbose)
-{
-  printf("parameters\n");
-  printf("%20s %s\n", "profile", $opts{profile});
-  printf("%20s %s\n", "data-dir", $opts{datadir});
-  printf("%20s %s\n", "payout-address", $opts{"payout-address"});
-  printf("%20s %s\n", "worker", $opts{worker});
-  printf("%20s %s\n", "cards", $opts{"comma-cards"});
-  printf("%20s %s\n", "evaluation period", $opts{period});
-  printf("%20s %s\n", "price-method", $opts{"price-method"});
-  printf("%20s %s\n", "trailing-window", $opts{"trailing-window"});
-  printf("%20s %s\n", "historical-samples", $opts{"historical-samples"});
-  printf("%20s %s\n", "retention", $opts{retention});
-  printf("%20s %s\n", "nicehash-usa", $opts{"nicehash-usa"} ? "yes" : "no");
-  printf("%20s %s\n", "nicehash-eu", $opts{"nicehash-eu"} ? "yes" : "no");
-  printf("%20s %s\n", "use-actual-price", $opts{"use-actual-price"} ? "yes" : "no");
-  printf("%20s %s\n", "use-actual-speed", $opts{"use-actual-speed"} ? "yes" : "no");
-}
 
 $SIG{CHLD} = 'IGNORE';
 
@@ -555,8 +527,8 @@ while(!$quit)
 
     if($r <= 0)
     {
-      # happens when the perf process never emits a perf record
-      last if (time() - $T) > ($opts{period} * 1.2);
+      # this happens if the perf process never emits a perf record
+      last if (time() - $T) > ($opts{"switching-period"} * 1.2);
     }
 
     next unless $r > 0;
@@ -571,8 +543,8 @@ while(!$quit)
       }
       if($r)
       {
-        POSIX::write(1, $data, $r) or die "write(1) : $!";
-        POSIX::write($autominer_writer_fd, $data, $r) or die "write($autominer_writer_fd) : $!";
+        awrite(1, $data, $r);
+        awrite($autominer_writer_fd, $data, $r);
       }
     }
 
@@ -600,7 +572,7 @@ while(!$quit)
         }
 
         # minimize lost shares by switching right after reading a perf record
-        last if (time() - $T) >= ($opts{period});
+        last if (time() - $T) >= ($opts{"switching-period"});
       }
     }
   }
@@ -617,7 +589,7 @@ while(!$quit)
 
   # update mining speed samples for the current option
   push @{$$mining{speeds}}, $$present{speed};
-  $#{$$mining{speeds}} = $opts{"speed-samples"} - 1 if $#{$$mining{speeds}} >= $opts{"speed-samples"};
+  $#{$$mining{speeds}} = $opts{"actual-speed-samples"} - 1 if $#{$$mining{speeds}} >= $opts{"actual-speed-samples"};
 
   $$mining{speed} = 0;
   for my $speed (@{$$mining{speeds}})

@@ -50,7 +50,7 @@ sub history_init
   # prune history files outside the retention window
   if(defined $$history{head} and defined $$history{tail})
   {
-    while(ring_sub($$history{head}, $$history{tail}, 0xffff) > $::opts{retention})
+    while(ring_sub($$history{head}, $$history{tail}, 0xffff) > $::opts{"history-retention"})
     {
       uxunlink(sprintf("%s/%05u", $$history{dir}, $$history{tail}));
       $$history{tail} = ring_add($$history{tail}, 1, 0xffff);
@@ -76,7 +76,7 @@ sub history_advance
     $$history{tail} = $$history{head};
     symlinkf(sprintf("%05u", $$history{tail}), "$$history{dir}/tail");
   }
-  elsif(ring_sub($$history{head}, $$history{tail}, 0xffff) >= $::opts{retention})
+  elsif(ring_sub($$history{head}, $$history{tail}, 0xffff) >= $::opts{"history-retention"})
   {
     uxunlink(sprintf("%s/%05u", $$history{dir}, $$history{tail}));
     $$history{tail} = ring_add($$history{tail}, 1, 0xffff);

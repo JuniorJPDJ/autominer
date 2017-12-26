@@ -17,17 +17,21 @@
 # payout-address and worker are used to construct the username mining parameter
 #  send mining rewards here
 --payout-address <your btc address>
+
 # name of this mining rig / worker
-# --worker
+# default: none
+# --worker cybergold
 
 # directory for storing benchmark and market rates data
 --data-dir "/home/todd/.autominer/data"
 
 # specify which region(s) to mine in
+# default: all regions
 --nicehash-usa
-# --nicehash-eu
+--nicehash-eu
 
 # comma-separated list of cards to mine on
+#  most miners use all cards when this option is omitted
 --cards 0,1
 
 # configure paths to miner executables, if they're not in $PATH
@@ -36,3 +40,44 @@
 # --ethminer-path /usr/local/bin/ethminer
 # --nheqminer-cuda-path /usr/local/bin/nheqminer_cuda
 # --sgminer-path /usr/local/bin/sgminer
+# --eqminer-path /usr/local/bin/eqminer
+
+# number of 30s market samples to retain - these are computed by nicehash-aggregator
+# default : one day
+--market-samples-retention 2880
+
+
+#
+#
+# default: with a 6 minute switching period, this is about a month
+--history-retention 7200
+
+# how often to re-evaluate mining options, in seconds
+#
+#  note that, because the nicehash api reports performance with a rolling 5 minute window, a mining
+#  selection is maintained for a minimum of 5 minutes regardless of this setting
+#
+#  this setting also determines the time period covered by each history/bench sample
+#
+# default : 6 minutes
+--switching-period 360
+
+# minimum predicted increase in profit compared to the current option required for switching
+# default: 5 percent
+--switching-threshold 5
+
+# for the mining option currently being mined on, use actual speed as reported by nicehash
+--use-actual-speed 1
+
+# number of trailing performance samples to average to calculate the actual speed
+--actual-speed-samples 4
+
+--use-actual-price 1
+
+# which pricing method to use
+#  one of opportunity|trailing
+--price-method
+
+# for --price-method trailing, trailing price aggregation window to use
+#  one of s30|m5|m10|m30|h1|h3
+--trailing-window m5

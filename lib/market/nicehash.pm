@@ -44,7 +44,7 @@ our %algos = (
   , "keccak" =>         { code => 5  , units => 'TH/s'  , port => 3338 }
   , "lbry" =>           { code => 23 , units => 'TH/s'  , port => 3356 }
   , "lyra2re" =>        { code => 9  , units => 'GH/s'  , port => 3342 }
-  , "lyra2rev2" =>      { code => 14 , units => 'GH/s'  , port => 3347 }
+  , "lyra2rev2" =>      { code => 14 , units => 'TH/s'  , port => 3347 }
   , "neoscrypt" =>      { code => 8  , units => 'GH/s'  , port => 3341 }
   , "nist5" =>          { code => 7  , units => 'GH/s'  , port => 3340 }
   , "pascal" =>         { code => 25 , units => 'TH/s'  , port => 3358 }
@@ -56,7 +56,7 @@ our %algos = (
   , "x11gost" =>        { code => 26 , units => 'GH/s'  , port => 3359 }
   , "x13" =>            { code => 4  , units => 'GH/s'  , port => 3337 }
   , "x15" =>            { code => 6  , units => 'GH/s'  , port => 3339 }
-  , "scrypt" =>         { code => 0  , units => 'GH/s'  , port => 3333 }
+  , "scrypt" =>         { code => 0  , units => 'TH/s'  , port => 3333 }
 );
 
 our %algos_by_number = (

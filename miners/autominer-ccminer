@@ -50,6 +50,7 @@ elsif($ARGV[0] eq "algos")
       # known to not work well under ccminer
       next if $1 eq "cryptonight";
       next if $1 eq "decred";
+      next if $1 eq "equihash";
       next if $1 eq "qubit";
       next if $1 eq "scrypt";
       next if $1 eq "sia";

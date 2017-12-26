@@ -1,0 +1,128 @@
+#!/usr/bin/env perl
+
+# Copyright (c) 2017 Todd Freed <todd.freed@gmail.com>
+# 
+# This file is part of autominer.
+# 
+# autominer is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# autominer is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+
+use strict;
+use warnings;
+
+use File::Basename;
+use Cwd;
+our $repodir;
+BEGIN { $repodir = dirname(Cwd::realpath("$0/..")) }
+use lib "$repodir/lib";
+use util;
+use release;
+override_warn_and_die();
+
+use POSIX ':sys_wait_h';
+use config;
+use xlinux;
+
+our $verbose = 0;
+our %opts = (
+    'profile-temp'    => 'default'
+  , 'profile'         => 'default'
+  , 'duration'        => undef
+);
+
+my %optargs = (
+    'help|h'            => \$opts{help}
+  , 'version|V'         => \$opts{version}
+  , 'verbose|v'         => \$opts{verbose}
+  , 'profile-temp=s'    => \$opts{"profile-temp"}
+  , 'profile=s'         => \$opts{profile}
+  , 'duration=i'        => \$opts{duration}
+);;
+configure(\%optargs, \%opts);
+
+if($opts{help})
+{
+  print <<HELP;
+autominer - an autoswitching miner for linux, version $release::number
+
+ >> BTC donations : 184AtMD3AihYke2bKQD9AXh4Dgzvtr7jhA (hossbeast)
+
+autominer timed - run autominer mine under one profile temporarily, then re-exec with a different profile
+ usage: autominer timed [options]
+
+ --help                     print this help text
+ --version                  print the version number, exit
+ --verbose                  print commands as they are run
+
+required
+ --profile-temp             temporary profile
+ --duration                 time to run under the temporary profile in seconds
+ --profile                  profile
+HELP
+  exit 0
+}
+if($opts{version})
+{
+  print "autominer-$release::number\n";
+  exit 0;
+}
+
+die "missing required config --profile-temp" unless $opts{"profile-temp"};
+die "missing required config --profile" unless $opts{"profile"};
+die "missing required config --duration" unless $opts{duration};
+
+my $mine_pid = 0;
+$SIG{CHLD} = sub {
+  local ($!, $?);
+  while((my $pid = waitpid(-1, WNOHANG)) > 0) {
+    my $exit = $? >> 8;
+    my $sig = $? & 127;
+
+    if($pid == $mine_pid)
+    {
+      printf("CHLD mine-pid=$pid, status=$?, exit=$exit, signal=$sig\n");
+      $mine_pid = 0;
+    }
+
+    # affirmative murder
+    kill 9, $pid;
+  }
+};
+
+if(($mine_pid = fork()) == 0)
+{
+  pr_set_pdeathsig(9);
+
+  my @cmd = ("autominer", "--profile", $opts{"profile-temp"});
+  exec { $cmd[0] } @cmd;
+}
+
+print("mine-pid $mine_pid\n");
+
+my $end = $^T + $opts{duration};
+while($mine_pid)
+{
+  last if time() >= $end;
+
+  sleep(min($end - time(), 0));
+}
+
+if(!$mine_pid)
+{
+  print("auotminer mine early termination\n");
+  exit(1);
+}
+
+killfast([ \$mine_pid ]);
+
+my @cmd = ("autominer", "--profile", $opts{profile});
+exec { $cmd[0] } @cmd;

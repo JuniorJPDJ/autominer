@@ -160,7 +160,7 @@ sub perf_endfile
   $$algo{tail} = $num unless defined $$algo{tail};
   $$algo{head} = $num;
 
-  if(ring_sub($$algo{head}, $$algo{tail}, 0xffff) >= $::opts{retention})
+  if(ring_sub($$algo{head}, $$algo{tail}, 0xffff) >= $::opts{"history-retention"})
   {
     uxunlink(sprintf("%s/%05u", $dir, $$algo{tail}));
     $$algo{tail} = ring_add($$algo{tail}, 1, 0xffff);
@@ -220,7 +220,7 @@ sub perf_initialize
   mkdirp($dir);
 
   $$algo{perf_time_base} = 0;
-  ($$algo{head}, $$algo{tail}) = ring_init($dir, $::opts{retention});
+  ($$algo{head}, $$algo{tail}) = ring_init($dir, $::opts{"history-retention"});
 
   if(defined($$algo{tail}) and defined($$algo{head}))
   {

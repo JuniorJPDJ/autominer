@@ -1,5 +1,6 @@
 #!/usr/bin/env perl
 
+#
 # Copyright (c) 2017 Todd Freed <todd.freed@gmail.com>
 # 
 # This file is part of autominer.
@@ -15,6 +16,7 @@
 # GNU General Public License for more details.
 # 
 # You should have received a copy of the GNU General Public License
+#
 
 use strict;
 use warnings;
@@ -38,20 +40,17 @@ use ring;
 
 our $verbose = 0;
 our %opts = (
-    'retention'     => 2 * 60 * 24 # 24 hours
-  , 'datadir'       => $ENV{HOME} . "/.autominer/data"
-  , 'profile'       => 'default'
+    'profile' => 'default'
 );
 my %optargs = (
-    'help|h'        => \$opts{help}
-  , 'version|V'     => \$opts{version}
-  , 'verbose|v'     => \$opts{verbose}
+    'help|h'                       => \$opts{help}
+  , 'version|V'                    => \$opts{version}
+  , 'verbose|v'                    => \$opts{verbose}
+  , 'profile=s'                    => \$opts{profile}
+  , 'data-dir=s'                   => \$opts{"data-dir"}
 
-  , 'profile=s'     => \$opts{profile}
-  , 'period=i'      => \$opts{period}
-  , 'retention=i'   => \$opts{retention}
-  , 'data-dir=s'    => \$opts{datadir}
-  , 'region=s'      => \$opts{region}
+  , 'market-samples-retention=i'   => \$opts{"market-samples-retention"}
+  , 'region=s'                     => \$opts{region}
 );
 configure(\%optargs, \%opts);
 
@@ -64,16 +63,19 @@ autominer - an autoswitching miner for linux, version $release::number
 
 usage: nicehash-aggregator [options]
 
- --help                 print this help text
- --version              print the version number, exit
- --verbose              print commands as they are run
+ --help                  print this help text
+ --version               print the version number, exit
+ --verbose               print commands as they are run
 
 required
- --region usa|eu        nicehash region (nicehash calls this a location)
- --data-dir <path>
+ --region usa|eu         nicehash region (nicehash calls this a location)
+ --data-dir <dir>        locate market pricing samples at <dir>
+ --market-samples-retention <samples>
+                         retain <samples> 30s market samples
+optional
+ --profile <name>        read config from $ENV{HOME}/.autominer/profile/<name>/config
 
 optional
- --retention <number>   number of results to retain
 
 For more information visit https://github.com/hossbeast/autominer
 HELP
@@ -87,6 +89,7 @@ if($opts{version})
 
 die "missing required config --region" unless $opts{region};
 die "unknown region $opts{region}" unless $opts{region} =~ /usa|eu/;
+die "missing required config --market-samples-retention" unless $opts{"market-samples-retention"};
 
 # obtain an exclusive lock for the region
 my $rundir = "/tmp/run/autominer/aggregator";
@@ -105,12 +108,12 @@ my %sums;           # {m1}{algo} => sum
 my $ingestion_counter = 0;
 my $writer = JSON::XS->new->pretty(1);
 
-my $ratesdir = "$opts{datadir}/rates/nicehash-$opts{region}";
+my $ratesdir = $opts{"data-dir"} . "/rates/nicehash-$opts{region}";
 mkdirp($ratesdir);
 mkdirp("$ratesdir/spool");
 mkdirp("$ratesdir/samples");
 
-my $opportunitiesdir = "$opts{datadir}/opportunities/nicehash-$opts{region}";
+my $opportunitiesdir = $opts{"data-dir"} . "/opportunities/nicehash-$opts{region}";
 mkdirp($opportunitiesdir);
 mkdirp("$opportunitiesdir/spool");
 
@@ -190,7 +193,7 @@ sub ingest_rates
 }
 
 # initialize history bounds
-($head, $tail) = ring_init($samplesdir, $::opts{retention});
+($head, $tail) = ring_init($samplesdir, $::opts{"market-samples-retention"});
 
 # prime samples from history
 if(defined($tail) and defined($head))
@@ -285,14 +288,14 @@ while(1)
   close $fh;
   symlinkf(sprintf("%05u", $head), "$samplesdir/head");
 
-  if(ring_sub($head, $tail, 0xffff) >= $::opts{retention})
+  if(ring_sub($head, $tail, 0xffff) >= $::opts{"market-samples-retention"})
   {
     uxunlink(sprintf("%s/%05u", $samplesdir, $tail));
     $tail = ring_add($tail, 1, 0xffff);
   }
   symlinkf(sprintf("%05u", $tail), "$samplesdir/tail");
 
-  printf("%s : summarized orders for %s over %d seconds : %d samples\n"
+  printf("%s : summarized orders for %s over %d seconds : retained samples %d\n"
     , scalar localtime
     , $opts{region}
     , time() - $T

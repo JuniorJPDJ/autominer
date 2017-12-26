@@ -33,7 +33,7 @@ my $mode = 'mine';
 for(my $x = 0; $x <= $#ARGV; $x++)
 {
   my $param = $ARGV[$x];
-  if($param =~ /^stats|rates|mine$/)
+  if($param =~ /^stats|rates|mine|timed$/)
   {
     $mode = splice(@ARGV, $x, 1);
     last;
@@ -67,7 +67,7 @@ autominer - an autoswitching miner for linux, version $release::number
 
  >> BTC donations : 184AtMD3AihYke2bKQD9AXh4Dgzvtr7jhA (hossbeast)
 
-usage: autominer [stats|rates|mine] [options]
+usage: autominer [stats|rates|mine|timed] [options]
 
  --help                 print this help text
  --version              print the version number, exit

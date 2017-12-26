@@ -23,7 +23,7 @@ use warnings;
 
 require Exporter;
 our @ISA = qw|Exporter|;
-our @EXPORT = qw|uxmkdir xfhopen uxfhopen uxopen xunlink uxunlink pr_set_pdeathsig|;
+our @EXPORT = qw|uxmkdir xfhopen uxfhopen uxopen xunlink uxunlink pr_set_pdeathsig awrite aread|;
 
 use Data::Dumper;
 use Errno ':POSIX';
@@ -107,6 +107,29 @@ sub pr_set_pdeathsig
   my $PR_SET_PDEATHSIG = 1;   # at least it is on my machine
 
   syscall($SYS_prctl, $PR_SET_PDEATHSIG, $sig) >= 0 or die "prctl failed : $!";
+}
+
+# call write and retry on EINTR
+sub awrite
+{
+  while(1)
+  {
+    # returns undef on failure
+    my $r = POSIX::write(@_);
+    last if defined $r;
+    die "write failed : $!" unless $!{EINTR};
+  }
+}
+
+sub aread
+{
+  my $r = POSIX::read(@_);
+  if(not defined $r)
+  {
+    die("read($_[0]) : $!") unless $!{EINTR};
+  }
+
+  $r || 0;
 }
 
 1
